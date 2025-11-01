@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:firebase_storage/firebase_storage.dart' as fs_store;
+import 'package:ubwinza_riders/main.dart';
+import 'package:ubwinza_riders/views/splashScreen/splash_screen.dart';
 
 import '../global/global_instances.dart';
 import '../global/global_vars.dart';
@@ -177,7 +179,8 @@ class AuthViewModel {
         if (latitude != null) "latitude": latitude,
         if (longitude != null) "longitude": longitude,
         "createdAt": FieldValue.serverTimestamp(),
-        "status": "approved"
+        "status": "approved",
+        "isOnline":true
       }, SetOptions(merge: true));
 
       // Save to shared preferences
@@ -191,7 +194,8 @@ class AuthViewModel {
       await sharedPreferences!.setString("vehicleColor", vehicleColor);
       await sharedPreferences!.setString("licensePlate", licensePlate);
       await sharedPreferences!.setString("address", locationAddress);
-      await sharedPreferences!.setDouble("rating", 5.0);
+      await sharedPreferences!.setBool("isOnline", true);
+      await sharedPreferences!.setDouble("rating", 0.0);
       await sharedPreferences!.setInt("totalRides", 0);
 
       return true;
@@ -261,6 +265,8 @@ class AuthViewModel {
         if (dataSnapshot.data()!["status"] == "approved") {
           final data = dataSnapshot.data()!;
           
+          await appLifecycleService?.setUserOnline();
+
           await sharedPreferences!.setString("uid", currentFirebaseUser.uid);
           await sharedPreferences!.setString("email", data["email"]);
           await sharedPreferences!.setString("name", data["name"]);
@@ -283,5 +289,32 @@ class AuthViewModel {
         fb_auth.FirebaseAuth.instance.signOut();
       }
     });
+  }
+
+  Future<void> logout(BuildContext context) async {
+    try {
+      // Set user offline before signing out
+      await appLifecycleService?.setUserOffline();
+      
+      // Clear shared preferences
+      await sharedPreferences!.clear();
+      
+      // Sign out from Firebase
+      await fb_auth.FirebaseAuth.instance.signOut();
+      
+      // Navigate to login screen or splash screen
+      if (context.mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const MySplashScreen()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      debugPrint('Error during logout: $e');
+      if (context.mounted) {
+        commonViewModel.showSnackBar("Error during logout", context);
+      }
+    }
   }
 }

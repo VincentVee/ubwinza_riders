@@ -1,6 +1,7 @@
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:ubwinza_riders/global/global_instances.dart';
 import 'package:ubwinza_riders/global/global_vars.dart';
 import 'package:ubwinza_riders/views/mainScreens/history.dart';
 import 'package:ubwinza_riders/views/mainScreens/new_available_order.dart';
@@ -71,9 +72,9 @@ class _HomeScreenState extends State<HomeScreen> {
               }
 
               if(index == 5) {
-
-                FirebaseAuth.instance.signOut();
-                Navigator.push(context, MaterialPageRoute(builder: (_) => MySplashScreen()));
+                
+                authViewModel.logout(context);
+                //Navigator.push(context, MaterialPageRoute(builder: (_) => MySplashScreen()));
 
               }
 

@@ -44,6 +44,8 @@ dependencies:
   firebase_storage:
   shared_preferences:
   google_maps_flutter:
+  webview_flutter: ^4.4.2
+  flutter_tts: ^4.0.2
 
 
 dev_dependencies:

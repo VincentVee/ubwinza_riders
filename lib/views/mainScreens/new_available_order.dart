@@ -128,7 +128,7 @@ class _NewAvailableOrderScreenState extends State<NewAvailableOrderScreen> {
                                 ),
                               ),
                               onPressed: () =>
-                                  _confirmAccept(context, requestId, driverId),
+                                  _confirmAccept(context, requestId, driverId, data),
                             ),
                             ElevatedButton.icon(
                               icon: const Icon(Icons.cancel_outlined),
@@ -139,7 +139,7 @@ class _NewAvailableOrderScreenState extends State<NewAvailableOrderScreen> {
                                   horizontal: 16,
                                 ),
                               ),
-                              onPressed: () => _confirmReject(context),
+                              onPressed: () => _confirmReject(context, requestId),
                             ),
                           ],
                         ),
@@ -155,59 +155,77 @@ class _NewAvailableOrderScreenState extends State<NewAvailableOrderScreen> {
     );
   }
 
-  void _confirmAccept(BuildContext context, String requestId, String driverId) {
+  void _confirmAccept(BuildContext context, String requestId, String driverId, Map<String, dynamic> requestData) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF1A2B7B),
         title: const Text('Accept Request'),
         content: const Text(
-          'Do you want to accept this ride request and start it?',
+          'Do you want to accept this ride request?',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('No'),
+            child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              await _acceptRequest(requestId, driverId);
+              await _acceptRequest(requestId, driverId, requestData);
             },
-            child: const Text('Yes', style: TextStyle(color: Colors.green)),
+            child: const Text('Accept', style: TextStyle(color: Colors.green)),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _acceptRequest(String requestId, String driverId) async {
+  Future<void> _acceptRequest(String requestId, String driverId, Map<String, dynamic> requestData) async {
     try {
       final driver = _auth.currentUser;
+      
+      // Get rider data from Firestore
+      final riderDoc = await _firestore.collection('riders').doc(driverId).get();
+      final riderData = riderDoc.data();
+      
       await _firestore.collection('requests').doc(requestId).update({
         'status': 'accepted',
         'driverId': driverId,
-        'driverName': driver?.displayName ?? 'Unknown Rider',
-        'driverPhone': driver?.phoneNumber ?? '',
+        'driverName': riderData?['name'] ?? 'Unknown Rider',
+        'driverPhone': riderData?['phone'] ?? '',
+        'driverImage': riderData?['imageUrl'] ?? '',
+        'acceptedAt': FieldValue.serverTimestamp(),
+        'vehicleType': riderData?['vehicleType'] ?? '',
+        'vehicleModel': riderData?['vehicleModel'] ?? '',
+        'licensePlate': riderData?['licensePlate'] ?? '',
       });
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ParcelInProgressScreen(requestId: requestId),
-        ),
-      );
+      // Navigate to the parcel screen with "accepted" status
+      if (context.mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ParcelInProgressScreen(
+              requestId: requestId,
+              initialStatus: 'accepted',
+            ),
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to accept: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to accept: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  void _confirmReject(BuildContext context) {
+  void _confirmReject(BuildContext context, String requestId) {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -219,14 +237,44 @@ class _NewAvailableOrderScreenState extends State<NewAvailableOrderScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('No'),
+            child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Yes', style: TextStyle(color: Colors.red)),
+            onPressed: () async {
+              Navigator.pop(context);
+              await _rejectRequest(requestId);
+            },
+            child: const Text('Reject', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _rejectRequest(String requestId) async {
+    try {
+      await _firestore.collection('requests').doc(requestId).update({
+        'status': 'rejected',
+        'rejectedAt': FieldValue.serverTimestamp(),
+      });
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Request rejected'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to reject: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }
