@@ -20,8 +20,7 @@ class ParcelInProgressScreen extends StatefulWidget {
   });
 
   @override
-  State<ParcelInProgressScreen> createState() =>
-      _ParcelInProgressScreenState();
+  State<ParcelInProgressScreen> createState() => _ParcelInProgressScreenState();
 }
 
 class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
@@ -33,7 +32,9 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   Set<Marker> _markers = {};
   List<LatLng> _currentRoute = [];
   Set<Polyline> _polylines = {};
-  String _tripStage = 'idle'; // idle → to_pickup → to_destination → arrived
+  List<Map<String, dynamic>> _navSteps = [];
+
+  String _tripStage = 'idle';
   bool _isLoading = true;
   Timer? _locationTimer;
   LatLng? _currentLocation;
@@ -41,6 +42,9 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   DateTime? _lastCameraUpdate;
   DateTime? _lastRerouteTime;
   bool _canProceedToDestination = false;
+  double _lastBearing = 0;
+  int _currentStepIndex = 0;
+  String _currentInstruction = "Waiting for route..."; // NEW visible instruction
 
   @override
   void initState() {
@@ -65,15 +69,13 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
   Future<void> _loadRequestData() async {
     try {
-      final doc =
-      await _firestore.collection('requests').doc(widget.requestId).get();
+      final doc = await _firestore.collection('requests').doc(widget.requestId).get();
       if (!doc.exists) throw Exception("Request not found");
 
       requestData = doc.data();
 
       final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-      final destination =
-      LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+      final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
 
       await _getPolyline(pickup, destination, Colors.blueAccent, 'pickupToDest');
       _setMarkers(pickup, destination);
@@ -122,8 +124,22 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
     final encoded = routes.first['overview_polyline']['points'];
     final points = _decodePolyline(encoded);
+    _currentRoute = points;
 
-    _currentRoute = points; // save route points for deviation detection
+    _navSteps.clear();
+    final legs = routes.first['legs'] as List;
+    for (final leg in legs) {
+      for (final step in leg['steps']) {
+        final endLoc = step['end_location'];
+        _navSteps.add({
+          'instruction': step['html_instructions'],
+          'endLat': endLoc['lat'],
+          'endLng': endLoc['lng'],
+        });
+      }
+    }
+    _currentStepIndex = 0;
+    _currentInstruction = _stripHtml(_navSteps.first['instruction']);
 
     final polyline = Polyline(
       polylineId: PolylineId(id),
@@ -182,9 +198,20 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
   void _startLocationTracking() {
     _locationTimer?.cancel();
-    _locationTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
+    _locationTimer = Timer.periodic(const Duration(seconds: 6), (_) async {
       await _updateDriverLocation();
     });
+  }
+
+  bool _isOffRoute(LatLng pos, List<LatLng> route) {
+    double minDistance = double.infinity;
+    for (final point in route) {
+      final d = Geolocator.distanceBetween(
+        pos.latitude, pos.longitude, point.latitude, point.longitude,
+      );
+      if (d < minDistance) minDistance = d;
+    }
+    return minDistance > 40;
   }
 
   Future<void> _updateDriverLocation() async {
@@ -193,41 +220,44 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       _currentLocation = LatLng(pos.latitude, pos.longitude);
 
       final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-      final destination =
-      LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+      final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
 
       _setMarkers(pickup, destination);
       await _smoothFollowCamera();
 
       final distToPickup = Geolocator.distanceBetween(
-        _currentLocation!.latitude,
-        _currentLocation!.longitude,
-        pickup.latitude,
-        pickup.longitude,
+        _currentLocation!.latitude, _currentLocation!.longitude,
+        pickup.latitude, pickup.longitude,
       );
       final distToDest = Geolocator.distanceBetween(
-        _currentLocation!.latitude,
-        _currentLocation!.longitude,
-        destination.latitude,
-        destination.longitude,
+        _currentLocation!.latitude, _currentLocation!.longitude,
+        destination.latitude, destination.longitude,
       );
 
-      // Enable button near pickup
       if (_tripStage == 'to_pickup') {
         setState(() => _canProceedToDestination = distToPickup < 40);
       }
 
-      // Stop spam rerouting — only if off route > 50m
+      // --- Correct rerouting logic ---
       if (_currentRoute.isNotEmpty && _isOffRoute(_currentLocation!, _currentRoute)) {
         final now = DateTime.now();
-        if (_lastRerouteTime == null ||
-            now.difference(_lastRerouteTime!).inSeconds > 20) {
+        if (_lastRerouteTime == null || now.difference(_lastRerouteTime!).inSeconds > 20) {
           _lastRerouteTime = now;
+
           final target = _tripStage == 'to_pickup' ? pickup : destination;
-          await _getPolyline(_currentLocation!, target, Colors.green,
-              _tripStage == 'to_pickup' ? 'toPickup' : 'toDestination');
-          await _tts.speak("Route recalculated. Continue on the new path.");
+          setState(() => _currentInstruction = "Recalculating route...");
+
+          await _getPolyline(
+            _currentLocation!,
+            target,
+            Colors.green,
+            _tripStage == 'to_pickup' ? 'toPickup' : 'toDestination',
+          );
+
+          await _tts.speak("Route recalculated. Continue straight ahead.");
         }
+      } else {
+        await _announceNextTurn();
       }
 
       if (_tripStage == 'to_destination' && distToDest < 40) {
@@ -239,33 +269,61 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
     }
   }
 
-  bool _isOffRoute(LatLng pos, List<LatLng> route) {
-    double minDistance = double.infinity;
-    for (final point in route) {
-      final d = Geolocator.distanceBetween(
-        pos.latitude,
-        pos.longitude,
-        point.latitude,
-        point.longitude,
-      );
-      if (d < minDistance) minDistance = d;
+  Future<void> _announceNextTurn() async {
+    if (_navSteps.isEmpty || _currentStepIndex >= _navSteps.length) return;
+
+    final step = _navSteps[_currentStepIndex];
+    final end = LatLng(step['endLat'], step['endLng']);
+    final dist = Geolocator.distanceBetween(
+      _currentLocation!.latitude, _currentLocation!.longitude,
+      end.latitude, end.longitude,
+    );
+
+    if (dist < 30) {
+      final instruction = _stripHtml(step['instruction']);
+      setState(() => _currentInstruction = instruction);
+      await _tts.speak(instruction);
+      _currentStepIndex++;
+    } else if (dist > 30 && _currentStepIndex == 0) {
+      setState(() => _currentInstruction = "Continue straight on the route.");
     }
-    return minDistance > 50; // reroute only if > 50m off the route
+  }
+
+  String _stripHtml(String html) {
+    return html
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&');
   }
 
   Future<void> _smoothFollowCamera() async {
     final now = DateTime.now();
-    if (_lastCameraUpdate != null &&
-        now.difference(_lastCameraUpdate!).inSeconds < 3) return;
+    if (_lastCameraUpdate != null && now.difference(_lastCameraUpdate!).inSeconds < 3) return;
     _lastCameraUpdate = now;
 
+    if (_currentLocation == null) return;
     final controller = await _controller.future;
-    double bearing = 0;
+
+    double bearing = _lastBearing;
     if (_lastLocation != null) {
-      final dx = _currentLocation!.longitude - _lastLocation!.longitude;
-      final dy = _currentLocation!.latitude - _lastLocation!.latitude;
-      bearing = (Math.atan2(dx, dy) * 180 / Math.pi);
+      final distance = Geolocator.distanceBetween(
+        _lastLocation!.latitude, _lastLocation!.longitude,
+        _currentLocation!.latitude, _currentLocation!.longitude,
+      );
+
+      if (distance > 10) {
+        double newBearing = Geolocator.bearingBetween(
+          _lastLocation!.latitude, _lastLocation!.longitude,
+          _currentLocation!.latitude, _currentLocation!.longitude,
+        );
+        double diff = (newBearing - _lastBearing).abs();
+        if (diff > 10) {
+          bearing = newBearing;
+          _lastBearing = bearing;
+        }
+      }
     }
+
     _lastLocation = _currentLocation;
 
     await controller.animateCamera(CameraUpdate.newCameraPosition(
@@ -288,8 +346,7 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
     }
 
     final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-    final destination =
-    LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+    final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
 
     await _tts.speak("Heading to destination.");
     await _getPolyline(pickup, destination, Colors.green, 'toDestination');
@@ -342,14 +399,20 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
         minimumSize: const Size(double.infinity, 55),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
-      child: Text(text,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     final pickup = requestData?['pickupAddress'] ?? 'N/A';
     final dest = requestData?['destinationAddress'] ?? 'N/A';
@@ -370,6 +433,31 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
             zoomControlsEnabled: false,
             onMapCreated: (c) => _controller.complete(c),
           ),
+          // Instruction banner
+          Positioned(
+            top: 20,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))
+                ],
+              ),
+              child: Text(
+                _currentInstruction,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.black87,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
           Positioned(
             bottom: 140,
             left: 12,
@@ -387,11 +475,11 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('Passenger: $user',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16,color: Colors.black)),
                   const SizedBox(height: 6),
-                  Text('Pickup: $pickup', style: const TextStyle(fontSize: 14)),
+                  Text('Pickup: $pickup', style: const TextStyle(fontSize: 14, color: Colors.black)),
                   Text('Destination: $dest',
-                      style: const TextStyle(color: Colors.grey, fontSize: 14)),
+                      style: const TextStyle(color: Colors.black, fontSize: 14,)),
                 ],
               ),
             ),
