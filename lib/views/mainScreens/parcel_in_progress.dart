@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as Math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // For HapticFeedback
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
+
 import '../../global/global_vars.dart';
 
 class ParcelInProgressScreen extends StatefulWidget {
@@ -20,48 +22,92 @@ class ParcelInProgressScreen extends StatefulWidget {
   });
 
   @override
-  State<ParcelInProgressScreen> createState() => _ParcelInProgressScreenState();
+  State<ParcelInProgressScreen> createState() =>
+      _ParcelInProgressScreenState();
 }
 
 class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
+  // Google Map
   final Completer<GoogleMapController> _controller = Completer();
+
+  // Firebase Firestore
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  // TTS
   final FlutterTts _tts = FlutterTts();
 
+  // Request Data
   Map<String, dynamic>? requestData;
+
+  // Map Elements
   Set<Marker> _markers = {};
   List<LatLng> _currentRoute = [];
   Set<Polyline> _polylines = {};
-  List<Map<String, dynamic>> _navSteps = [];
 
-  String _tripStage = 'idle';
+  // Navigation Steps
+  List<Map<String, dynamic>> _navSteps = [];
+  int _currentStepIndex = 0;
+
+  // Navigation Status
+  String _tripStage = "idle";
   bool _isLoading = true;
+  bool _canProceedToDestination = false;
+  bool _disposed = false;
+
+  // ETA & Distance
+  String _etaText = "";
+  String _distanceText = "";
+
+  // Location Tracking
   Timer? _locationTimer;
   LatLng? _currentLocation;
   LatLng? _lastLocation;
-  DateTime? _lastCameraUpdate;
-  DateTime? _lastRerouteTime;
-  bool _canProceedToDestination = false;
+
+  // Camera
+  LatLng? _routeTarget;
   double _lastBearing = 0;
-  int _currentStepIndex = 0;
-  String _currentInstruction = "Waiting for route..."; // NEW visible instruction
+  DateTime? _lastCameraUpdate;
+
+  // Rerouting
+  DateTime? _lastRerouteTime;
+
+  // UI Instruction
+  String _currentInstruction = "Waiting for route...";
+
+  // Night Mode
+  bool _forceNightMode = false;
+
+  // Night Map Style
+  static const String nightMapJson = '''
+[
+  {"elementType": "geometry","stylers": [{"color": "#1d1d1d"}]},
+  {"elementType": "labels.icon","stylers": [{"visibility": "off"}]},
+  {"elementType": "labels.text.fill","stylers": [{"color": "#8e8e8e"}]},
+  {"elementType": "labels.text.stroke","stylers": [{"color": "#1d1d1d"}]},
+  {"featureType": "road","elementType": "geometry","stylers": [{"color": "#2c2c2c"}]},
+  {"featureType": "road","elementType": "labels.text.fill","stylers": [{"color": "#ffffff"}]},
+  {"featureType": "water","elementType": "geometry","stylers": [{"color": "#181818"}]}
+]
+''';
 
   @override
   void initState() {
     super.initState();
+    _tripStage = "idle";
     _initTTS();
     _loadRequestData();
   }
 
   void _initTTS() async {
     await _tts.setLanguage("en-US");
-    await _tts.setSpeechRate(0.4);
+    await _tts.setSpeechRate(0.45);
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _locationTimer?.cancel();
     _tts.stop();
     super.dispose();
@@ -69,26 +115,589 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
   Future<void> _loadRequestData() async {
     try {
-      final doc = await _firestore.collection('requests').doc(widget.requestId).get();
+      final doc = await _firestore
+          .collection('requests')
+          .doc(widget.requestId)
+          .get();
+
       if (!doc.exists) throw Exception("Request not found");
 
       requestData = doc.data();
 
-      final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-      final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+      final pickup = LatLng(
+        requestData!['pickupLat'],
+        requestData!['pickupLng'],
+      );
 
-      await _getPolyline(pickup, destination, Colors.blueAccent, 'pickupToDest');
+      final destination = LatLng(
+        requestData!['destinationLat'],
+        requestData!['destinationLng'],
+      );
+
+      // Preview Polyline
+      await _getPolyline(
+        pickup,
+        destination,
+        Colors.blueAccent,
+        'previewRoute',
+        buildNavSteps: false,
+      );
+
       _setMarkers(pickup, destination);
-      setState(() => _isLoading = false);
+
+      if (!_disposed) {
+        setState(() {
+          _isLoading = false;
+          _currentInstruction =
+          "Tap 'Start Ride' to begin navigation to pickup.";
+        });
+      }
     } catch (e) {
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error loading request: $e')));
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading request: $e')),
+      );
+    }
+  }
+  // ---------------------------
+  // GOOGLE DIRECTIONS → POLYLINE + STEPS + ETA
+  // ---------------------------
+
+  Future<void> _getPolyline(
+      LatLng origin,
+      LatLng destination,
+      Color color,
+      String id, {
+        bool buildNavSteps = true,
+      }) async {
+    final url =
+        'https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${destination.latitude},${destination.longitude}&key=$googleApiKey';
+
+    final res = await http.get(Uri.parse(url));
+    if (res.statusCode != 200) return;
+
+    final data = json.decode(res.body);
+    final routes = data['routes'] as List;
+    if (routes.isEmpty) return;
+
+    final route = routes.first;
+    final encoded = route['overview_polyline']['points'];
+    final points = _decodePolyline(encoded);
+
+    // Extract ETA + Distance
+    final legs = route['legs'] as List;
+    final leg = legs.first;
+
+    _etaText = leg['duration']['text'];
+    _distanceText = leg['distance']['text'];
+
+    if (buildNavSteps) {
+      _currentRoute = points;
+      _navSteps.clear();
+
+      for (final step in leg['steps']) {
+        final end = step['end_location'];
+        final lanes = step['lanes'] ?? [];
+
+        _navSteps.add({
+          'instruction': step['html_instructions'] ?? '',
+          'endLat': end['lat'],
+          'endLng': end['lng'],
+          'maneuver': step['maneuver'] ?? "",
+          'lanes': lanes,
+        });
+      }
+
+      _currentStepIndex = 0;
+      if (_navSteps.isNotEmpty) {
+        _currentInstruction = _stripHtml(_navSteps.first['instruction']);
+      }
+    }
+
+    final polyline = Polyline(
+      polylineId: PolylineId(id),
+      points: points,
+      width: 6,
+      color: color,
+    );
+
+    if (!_disposed) {
+      setState(() {
+        _polylines.removeWhere((p) => p.polylineId.value == id);
+        _polylines.add(polyline);
+      });
     }
   }
 
+  List<LatLng> _decodePolyline(String encoded) {
+    List<LatLng> poly = [];
+    int index = 0, len = encoded.length, lat = 0, lng = 0;
+
+    while (index < len) {
+      int b, shift = 0, result = 0;
+
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      int dlng = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+      lng += dlng;
+
+      poly.add(LatLng(lat / 1E5, lng / 1E5));
+    }
+
+    return poly;
+  }
+
+  // ---------------------------
+  // START RIDE → STATUS "IN‑PROGRESS"
+  // ---------------------------
+
+  Future<void> _startRide() async {
+    await _tts.speak("Starting your ride. Head to the pickup location.");
+
+    await _firestore.collection('requests').doc(widget.requestId).update({
+      'status': 'in-progress',
+      'startedAt': DateTime.now(),
+    });
+
+    final pos = await Geolocator.getCurrentPosition();
+    _currentLocation = LatLng(pos.latitude, pos.longitude);
+
+    final pickup = LatLng(
+      requestData!['pickupLat'],
+      requestData!['pickupLng'],
+    );
+
+    _routeTarget = pickup;
+
+    await _getPolyline(
+      _currentLocation!,
+      _routeTarget!,
+      Colors.green,
+      "activeRoute",
+      buildNavSteps: true,
+    );
+
+    setState(() => _tripStage = "to_pickup");
+
+    _startLocationTracking();
+  }
+
+  void _startLocationTracking() {
+    _locationTimer?.cancel();
+    _locationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _updateDriverLocation();
+    });
+  }
+
+  // ---------------------------
+  // REAL‑TIME LOCATION UPDATES
+  // ---------------------------
+
+  Future<void> _updateDriverLocation() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition();
+      _currentLocation = LatLng(pos.latitude, pos.longitude);
+
+      final pickup = LatLng(
+        requestData!['pickupLat'],
+        requestData!['pickupLng'],
+      );
+
+      final destination = LatLng(
+        requestData!['destinationLat'],
+        requestData!['destinationLng'],
+      );
+
+      _setMarkers(pickup, destination);
+      await _smoothFollowCamera();
+
+      final distToPickup = Geolocator.distanceBetween(
+        _currentLocation!.latitude,
+        _currentLocation!.longitude,
+        pickup.latitude,
+        pickup.longitude,
+      );
+
+      final distToDest = Geolocator.distanceBetween(
+        _currentLocation!.latitude,
+        _currentLocation!.longitude,
+        destination.latitude,
+        destination.longitude,
+      );
+
+      // ARRIVING AT PICKUP
+      if (_tripStage == "to_pickup") {
+        final canProceed = distToPickup < 35;
+
+        if (canProceed && !_canProceedToDestination) {
+          await _tts.speak("You have arrived at the pickup.");
+          HapticFeedback.mediumImpact();
+          setState(() {
+            _currentInstruction =
+            "Arrived at pickup. Confirm parcel and press 'Heading to Destination'.";
+            _canProceedToDestination = true;
+          });
+        }
+      }
+
+      // REROUTE IF OFF ROUTE
+      if (_currentRoute.isNotEmpty &&
+          _isOffRoute(_currentLocation!, _currentRoute)) {
+        final now = DateTime.now();
+        if (_lastRerouteTime == null ||
+            now.difference(_lastRerouteTime!).inSeconds > 10) {
+          _lastRerouteTime = now;
+          setState(() => _currentInstruction = "Recalculating route...");
+
+          await _getPolyline(
+            _currentLocation!,
+            _routeTarget!,
+            Colors.green,
+            "activeRoute",
+            buildNavSteps: true,
+          );
+
+          await _tts.speak("Route recalculated.");
+        }
+      } else {
+        await _announceNextTurn();
+      }
+
+      // ARRIVE AT DESTINATION
+      if (_tripStage == "to_destination" && distToDest < 35) {
+        await _tts.speak("You have arrived at the destination.");
+        HapticFeedback.mediumImpact();
+
+        setState(() {
+          _tripStage = "arrived";
+          _currentInstruction = "Arrived at destination.";
+        });
+      }
+    } catch (e) {
+      debugPrint("Location update error: $e");
+    }
+  }
+
+  // ---------------------------
+  // TURN‑BY‑TURN ANNOUNCER
+  // ---------------------------
+
+  bool _isRoundaboutStep(Map<String, dynamic> step) {
+    final maneuver = step['maneuver'] ?? "";
+    return maneuver.contains("roundabout");
+  }
+
+
+  int _extractRoundaboutExit(String instruction) {
+    final match = RegExp(r'(\d+)(st|nd|rd|th)').firstMatch(instruction);
+    if (match != null) {
+      return int.tryParse(match.group(1)!) ?? 0;
+    }
+    return 0;
+  }
+
+
+  String _lastSpoken = "";
+  DateTime _lastSpeechTime = DateTime.now().subtract(const Duration(seconds: 10));
+
+  final List<int> _ttsDistances = [300, 150, 80, 40, 20];
+  int _lastDistanceBucket = -1;
+
+  Future<void> _announceNextTurn() async {
+    if (_currentLocation == null) return;
+    if (_navSteps.isEmpty || _currentStepIndex >= _navSteps.length) return;
+
+    final step = _navSteps[_currentStepIndex];
+    final end = LatLng(step['endLat'], step['endLng']);
+    final maneuver = step['maneuver'] ?? "";
+    final instruction = _stripHtml(step['instruction']);
+    final dist = Geolocator.distanceBetween(
+      _currentLocation!.latitude,
+      _currentLocation!.longitude,
+      end.latitude,
+      end.longitude,
+    );
+
+    // -- ROUNDABOUT DETECTION --
+    if (_isRoundaboutStep(step)) {
+      final exit = _extractRoundaboutExit(instruction);
+
+      String spoken;
+      if (dist > 40) {
+        spoken = exit > 0
+            ? "At the roundabout, take the ${exit}th exit."
+            : "Approaching a roundabout.";
+      } else {
+        spoken = exit > 0
+            ? "Take the ${exit}th exit."
+            : "Exit the roundabout.";
+        HapticFeedback.mediumImpact();
+        _currentStepIndex++;
+      }
+
+      if (spoken != _currentInstruction) {
+        setState(() => _currentInstruction = spoken);
+      }
+
+      if (spoken != _lastSpoken &&
+          DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
+        _lastSpeechTime = DateTime.now();
+        _lastSpoken = spoken;
+        await _tts.speak(spoken);
+      }
+
+      return; // roundabout handled, stop here
+    }
+
+    // -----------------------
+    // NORMAL TURN LOGIC
+    // -----------------------
+
+    int bucket = _ttsDistances.firstWhere(
+          (d) => dist >= d,
+      orElse: () => 0,
+    );
+
+    if (bucket == _lastDistanceBucket && bucket != 0) {
+      return; // same bucket, no repeat
+    }
+
+    String spokenText;
+
+    if (bucket > 20) {
+      spokenText = "In $bucket meters, $instruction";
+    } else if (dist < 20) {
+      spokenText = instruction;
+      HapticFeedback.mediumImpact();
+      _currentStepIndex++;
+    } else {
+      return;
+    }
+
+    setState(() => _currentInstruction = spokenText);
+
+    _lastDistanceBucket = bucket;
+
+    if (spokenText != _lastSpoken &&
+        DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
+      _lastSpeechTime = DateTime.now();
+      _lastSpoken = spokenText;
+      await _tts.speak(spokenText);
+    }
+  }
+
+
+
+  // ---------------------------
+  // HEADING‑ALIGNED CAMERA
+  // ---------------------------
+
+  Future<void> _smoothFollowCamera() async {
+    if (_currentLocation == null) return;
+
+    final controller = await _controller.future;
+
+    double bearing = _lastBearing;
+
+    if (_lastLocation != null) {
+      final movement = Geolocator.distanceBetween(
+        _lastLocation!.latitude,
+        _lastLocation!.longitude,
+        _currentLocation!.latitude,
+        _currentLocation!.longitude,
+      );
+
+      if (movement > 2) {
+        bearing = Geolocator.bearingBetween(
+          _lastLocation!.latitude,
+          _lastLocation!.longitude,
+          _currentLocation!.latitude,
+          _currentLocation!.longitude,
+        );
+        _lastBearing = bearing;
+      }
+    }
+
+    _lastLocation = _currentLocation;
+
+    await controller.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: _currentLocation!,
+          zoom: 18,
+          tilt: 0,      // because you chose FLAT MODE
+          bearing: bearing,
+        ),
+      ),
+    );
+  }
+
+  // ---------------------------
+  // ROUTE DEVIATION LOGIC
+  // ---------------------------
+
+  bool _isOffRoute(LatLng pos, List<LatLng> route) {
+    double minDist = 999999;
+    for (final point in route) {
+      final d = Geolocator.distanceBetween(
+        pos.latitude,
+        pos.longitude,
+        point.latitude,
+        point.longitude,
+      );
+      if (d < minDist) minDist = d;
+    }
+    return minDist > 40;
+  }
+
+  // ---------------------------
+  // PROCEED TO DESTINATION
+  // ---------------------------
+
+  Future<void> _proceedToDestination() async {
+    if (!_canProceedToDestination) {
+      await _tts.speak("Move closer to the pickup first.");
+      return;
+    }
+
+    final destination =
+    LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+
+    _routeTarget = destination;
+
+    await _tts.speak("Heading to destination.");
+
+    await _firestore
+        .collection('requests')
+        .doc(widget.requestId)
+        .update({'status': 'heading_to_destination'});
+
+    await _getPolyline(
+      _currentLocation!,
+      destination,
+      Colors.green,
+      "activeRoute",
+      buildNavSteps: true,
+    );
+
+    setState(() {
+      _tripStage = "to_destination";
+      _canProceedToDestination = false;
+    });
+  }
+
+  // ---------------------------
+  // COMPLETE RIDE
+  // ---------------------------
+
+  Future<void> _completeRide() async {
+    await _tts.speak("Ride completed.");
+    await _firestore.collection('requests').doc(widget.requestId).update({
+      'status': 'completed',
+      'completedAt': DateTime.now(),
+    });
+    Navigator.pop(context);
+  }
+
+  // ---------------------------
+  // LANE GUIDANCE WIDGET
+  // ---------------------------
+
+  Widget _laneGuidanceWidget(Map<String, dynamic> step) {
+    final lanes = step['lanes'] as List<dynamic>?;
+
+    if (lanes == null || lanes.isEmpty) return const SizedBox();
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: lanes.map((lane) {
+        final valid = lane['valid'] ?? false;
+        final indication = (lane['indications'] as List).join(", ");
+
+        return Container(
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(
+              horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: valid ? Colors.green : Colors.grey.shade800,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            indication.toUpperCase(),
+            style: TextStyle(
+              color: valid ? Colors.white : Colors.white70,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // ---------------------------
+  // BIG TURN ARROW
+  // ---------------------------
+
+  IconData _turnIcon(String maneuver) {
+    switch (maneuver) {
+      case "turn-left":
+        return Icons.turn_left;
+      case "turn-right":
+        return Icons.turn_right;
+      case "uturn-left":
+      case "uturn-right":
+        return Icons.u_turn_left;
+      case "fork-left":
+        return Icons.turn_slight_left;
+      case "fork-right":
+        return Icons.turn_slight_right;
+      default:
+        return Icons.straight;
+    }
+  }
+
+  Widget _bigTurnArrow(String maneuver) {
+    return Icon(
+      _turnIcon(maneuver),
+      size: 70,
+      color: Colors.blueAccent,
+    );
+  }
+
+  // ---------------------------
+  // HTML CLEANER
+  // ---------------------------
+
+  String _stripHtml(String html) {
+    return html
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('&amp;', '&');
+  }
+
+  // ---------------------------
+  // SET MARKERS (Driver, Pickup, Destination)
+  // ---------------------------
+
   void _setMarkers(LatLng pickup, LatLng destination) {
-    _markers = {
+    final markers = <Marker>{
       Marker(
         markerId: const MarkerId('pickup'),
         position: pickup,
@@ -102,290 +711,54 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       ),
     };
+
     if (_currentLocation != null) {
-      _markers.add(Marker(
-        markerId: const MarkerId('driver'),
-        position: _currentLocation!,
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-      ));
-    }
-  }
-
-  Future<void> _getPolyline(
-      LatLng origin, LatLng destination, Color color, String id) async {
-    final url =
-        'https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${destination.latitude},${destination.longitude}&key=$googleApiKey';
-    final res = await http.get(Uri.parse(url));
-    if (res.statusCode != 200) return;
-
-    final data = json.decode(res.body);
-    final routes = data['routes'] as List;
-    if (routes.isEmpty) return;
-
-    final encoded = routes.first['overview_polyline']['points'];
-    final points = _decodePolyline(encoded);
-    _currentRoute = points;
-
-    _navSteps.clear();
-    final legs = routes.first['legs'] as List;
-    for (final leg in legs) {
-      for (final step in leg['steps']) {
-        final endLoc = step['end_location'];
-        _navSteps.add({
-          'instruction': step['html_instructions'],
-          'endLat': endLoc['lat'],
-          'endLng': endLoc['lng'],
-        });
-      }
-    }
-    _currentStepIndex = 0;
-    _currentInstruction = _stripHtml(_navSteps.first['instruction']);
-
-    final polyline = Polyline(
-      polylineId: PolylineId(id),
-      color: color,
-      width: 7,
-      points: points,
-    );
-
-    setState(() {
-      _polylines.removeWhere((p) => p.polylineId.value == id);
-      _polylines.add(polyline);
-    });
-  }
-
-  List<LatLng> _decodePolyline(String encoded) {
-    List<LatLng> poly = [];
-    int index = 0, len = encoded.length, lat = 0, lng = 0;
-    while (index < len) {
-      int b, shift = 0, result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1F) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlat = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-      lat += dlat;
-      shift = 0;
-      result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1F) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlng = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
-      lng += dlng;
-      poly.add(LatLng(lat / 1E5, lng / 1E5));
-    }
-    return poly;
-  }
-
-  Future<void> _startRide() async {
-    await _tts.speak("Starting your ride. Head to pickup location.");
-    final pos = await Geolocator.getCurrentPosition();
-    _currentLocation = LatLng(pos.latitude, pos.longitude);
-
-    final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-    await _getPolyline(_currentLocation!, pickup, Colors.green, 'toPickup');
-
-    setState(() {
-      _tripStage = 'to_pickup';
-      _canProceedToDestination = false;
-    });
-
-    _startLocationTracking();
-  }
-
-  void _startLocationTracking() {
-    _locationTimer?.cancel();
-    _locationTimer = Timer.periodic(const Duration(seconds: 6), (_) async {
-      await _updateDriverLocation();
-    });
-  }
-
-  bool _isOffRoute(LatLng pos, List<LatLng> route) {
-    double minDistance = double.infinity;
-    for (final point in route) {
-      final d = Geolocator.distanceBetween(
-        pos.latitude, pos.longitude, point.latitude, point.longitude,
+      markers.add(
+        Marker(
+          markerId: const MarkerId('driver'),
+          position: _currentLocation!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+        ),
       );
-      if (d < minDistance) minDistance = d;
     }
-    return minDistance > 40;
-  }
 
-  Future<void> _updateDriverLocation() async {
-    try {
-      final pos = await Geolocator.getCurrentPosition();
-      _currentLocation = LatLng(pos.latitude, pos.longitude);
-
-      final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-      final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
-
-      _setMarkers(pickup, destination);
-      await _smoothFollowCamera();
-
-      final distToPickup = Geolocator.distanceBetween(
-        _currentLocation!.latitude, _currentLocation!.longitude,
-        pickup.latitude, pickup.longitude,
-      );
-      final distToDest = Geolocator.distanceBetween(
-        _currentLocation!.latitude, _currentLocation!.longitude,
-        destination.latitude, destination.longitude,
-      );
-
-      if (_tripStage == 'to_pickup') {
-        setState(() => _canProceedToDestination = distToPickup < 40);
-      }
-
-      // --- Correct rerouting logic ---
-      if (_currentRoute.isNotEmpty && _isOffRoute(_currentLocation!, _currentRoute)) {
-        final now = DateTime.now();
-        if (_lastRerouteTime == null || now.difference(_lastRerouteTime!).inSeconds > 20) {
-          _lastRerouteTime = now;
-
-          final target = _tripStage == 'to_pickup' ? pickup : destination;
-          setState(() => _currentInstruction = "Recalculating route...");
-
-          await _getPolyline(
-            _currentLocation!,
-            target,
-            Colors.green,
-            _tripStage == 'to_pickup' ? 'toPickup' : 'toDestination',
-          );
-
-          await _tts.speak("Route recalculated. Continue straight ahead.");
-        }
-      } else {
-        await _announceNextTurn();
-      }
-
-      if (_tripStage == 'to_destination' && distToDest < 40) {
-        await _tts.speak("You have arrived at your destination.");
-        setState(() => _tripStage = 'arrived');
-      }
-    } catch (e) {
-      debugPrint('Location update error: $e');
+    if (!_disposed) {
+      setState(() => _markers = markers);
     }
   }
 
-  Future<void> _announceNextTurn() async {
-    if (_navSteps.isEmpty || _currentStepIndex >= _navSteps.length) return;
-
-    final step = _navSteps[_currentStepIndex];
-    final end = LatLng(step['endLat'], step['endLng']);
-    final dist = Geolocator.distanceBetween(
-      _currentLocation!.latitude, _currentLocation!.longitude,
-      end.latitude, end.longitude,
-    );
-
-    if (dist < 30) {
-      final instruction = _stripHtml(step['instruction']);
-      setState(() => _currentInstruction = instruction);
-      await _tts.speak(instruction);
-      _currentStepIndex++;
-    } else if (dist > 30 && _currentStepIndex == 0) {
-      setState(() => _currentInstruction = "Continue straight on the route.");
-    }
-  }
-
-  String _stripHtml(String html) {
-    return html
-        .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&');
-  }
-
-  Future<void> _smoothFollowCamera() async {
-    final now = DateTime.now();
-    if (_lastCameraUpdate != null && now.difference(_lastCameraUpdate!).inSeconds < 3) return;
-    _lastCameraUpdate = now;
-
-    if (_currentLocation == null) return;
-    final controller = await _controller.future;
-
-    double bearing = _lastBearing;
-    if (_lastLocation != null) {
-      final distance = Geolocator.distanceBetween(
-        _lastLocation!.latitude, _lastLocation!.longitude,
-        _currentLocation!.latitude, _currentLocation!.longitude,
-      );
-
-      if (distance > 10) {
-        double newBearing = Geolocator.bearingBetween(
-          _lastLocation!.latitude, _lastLocation!.longitude,
-          _currentLocation!.latitude, _currentLocation!.longitude,
-        );
-        double diff = (newBearing - _lastBearing).abs();
-        if (diff > 10) {
-          bearing = newBearing;
-          _lastBearing = bearing;
-        }
-      }
-    }
-
-    _lastLocation = _currentLocation;
-
-    await controller.animateCamera(CameraUpdate.newCameraPosition(
-      CameraPosition(
-        target: _currentLocation!,
-        zoom: 19.5,
-        tilt: 80,
-        bearing: bearing,
-      ),
-    ));
-  }
-
-  Future<void> _proceedToDestination() async {
-    if (!_canProceedToDestination) {
-      await _tts.speak("You need to get closer to the pickup before proceeding.");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Move closer to the pickup first.")),
-      );
-      return;
-    }
-
-    final pickup = LatLng(requestData!['pickupLat'], requestData!['pickupLng']);
-    final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
-
-    await _tts.speak("Heading to destination.");
-    await _getPolyline(pickup, destination, Colors.green, 'toDestination');
-
-    await _firestore
-        .collection('requests')
-        .doc(widget.requestId)
-        .update({'status': 'heading_to_destination'});
-
-    setState(() {
-      _tripStage = 'to_destination';
-      _canProceedToDestination = false;
-    });
-  }
-
-  Future<void> _completeRide() async {
-    await _tts.speak("Ride completed successfully.");
-    _locationTimer?.cancel();
-    await _firestore
-        .collection('requests')
-        .doc(widget.requestId)
-        .update({'status': 'completed'});
-    if (mounted) Navigator.pop(context);
-  }
+  // ---------------------------
+  //  UI ACTION BUTTON
+  // ---------------------------
 
   Widget _buildActionButton() {
     switch (_tripStage) {
-      case 'idle':
-        return _button("Start Ride", Colors.blue, _startRide);
-      case 'to_pickup':
+      case "idle":
+        return _button("Start Ride", Colors.blueAccent, _startRide);
+
+      case "to_pickup":
         return _button(
           "Heading to Destination",
-          _canProceedToDestination ? Colors.green : Colors.lightBlueAccent,
+          _canProceedToDestination ? Colors.green : Colors.grey,
           _proceedToDestination,
         );
-      case 'to_destination':
-        return _button("Heading to Destination", Colors.green, null);
-      case 'arrived':
-        return _button("Complete Ride", Colors.teal, _completeRide);
+
+      case "to_destination":
+        return _button(
+          "Navigating to Destination",
+          Colors.green,
+          null,
+        );
+
+      case "arrived":
+        return _button(
+          "Complete Ride",
+          Colors.teal,
+          _completeRide,
+        );
+
       default:
         return const SizedBox();
     }
@@ -397,95 +770,215 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
         minimumSize: const Size(double.infinity, 55),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
       ),
       child: Text(
         text,
-        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+        ),
       ),
     );
   }
+
+  // ---------------------------
+  // NIGHT MODE TOGGLE
+  // ---------------------------
+
+  Future<void> _applyMapStyle() async {
+    final controller = await _controller.future;
+
+    if (_forceNightMode) {
+      controller.setMapStyle(nightMapJson);
+    } else {
+      controller.setMapStyle(null); // Day mode
+    }
+  }
+
+  bool get isNightTime {
+    final hour = DateTime.now().hour;
+    return hour < 6 || hour > 18;
+  }
+
+  // ---------------------------
+  // BUILD USER INTERFACE
+  // ---------------------------
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+        backgroundColor: Colors.black,
+        body: Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
       );
     }
 
-    final pickup = requestData?['pickupAddress'] ?? 'N/A';
-    final dest = requestData?['destinationAddress'] ?? 'N/A';
-    final user = requestData?['userName'] ?? 'Customer';
+    final pickup = requestData?['pickupAddress'] ?? "N/A";
+    final dest = requestData?['destinationAddress'] ?? "N/A";
+    final user = requestData?['userName'] ?? "Customer";
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Ride Navigation'), backgroundColor: Colors.green),
+      appBar: AppBar(
+        backgroundColor: Colors.green,
+        title: const Text(
+          "Ride Navigation",
+          style: TextStyle(color: Colors.white),
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _forceNightMode ? Icons.dark_mode : Icons.light_mode,
+              color: Colors.white,
+            ),
+            onPressed: () {
+              setState(() => _forceNightMode = !_forceNightMode);
+              _applyMapStyle();
+            },
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           GoogleMap(
             initialCameraPosition: CameraPosition(
-              target: LatLng(requestData!['pickupLat'], requestData!['pickupLng']),
+              target: LatLng(
+                requestData!['pickupLat'],
+                requestData!['pickupLng'],
+              ),
               zoom: 15,
             ),
-            markers: _markers,
-            polylines: _polylines,
+            onMapCreated: (controller) {
+              _controller.complete(controller);
+              _applyMapStyle();
+            },
             myLocationEnabled: true,
             zoomControlsEnabled: false,
-            onMapCreated: (c) => _controller.complete(c),
+            markers: _markers,
+            polylines: _polylines,
           ),
-          // Instruction banner
+
+          // ---------------------------
+          // TOP NAVIGATION BANNER
+          // ---------------------------
+
           Positioned(
-            top: 20,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: const [
-                  BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2))
-                ],
-              ),
-              child: Text(
-                _currentInstruction,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.black87,
+            top: 15,
+            left: 15,
+            right: 15,
+            child: Column(
+              children: [
+                // TURN ARROW
+                if (_navSteps.isNotEmpty &&
+                    _currentStepIndex < _navSteps.length)
+                  _bigTurnArrow(_navSteps[_currentStepIndex]['maneuver']),
+
+                const SizedBox(height: 8),
+
+                // NAVIGATION INSTRUCTION
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black26,
+                        offset: Offset(0, 2),
+                        blurRadius: 6,
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    _currentInstruction,
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 18,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
                 ),
-                textAlign: TextAlign.center,
-              ),
+
+                const SizedBox(height: 10),
+
+                // LANE GUIDANCE
+                if (_navSteps.isNotEmpty &&
+                    _currentStepIndex < _navSteps.length)
+                  _laneGuidanceWidget(
+                    _navSteps[_currentStepIndex],
+                  ),
+              ],
             ),
           ),
+
+          // ---------------------------
+          // BOTTOM INFORMATION CARD
+          // ---------------------------
+         /*
           Positioned(
-            bottom: 140,
+            bottom: 150,
             left: 12,
             right: 12,
             child: Container(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
+                color: Colors.white.withOpacity(0.95),
+                borderRadius: BorderRadius.circular(18),
                 boxShadow: const [
-                  BoxShadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, -2))
+                  BoxShadow(
+                    blurRadius: 8,
+                    offset: Offset(0, -2),
+                    color: Colors.black26,
+                  ),
                 ],
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Passenger: $user',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16,color: Colors.black)),
-                  const SizedBox(height: 6),
-                  Text('Pickup: $pickup', style: const TextStyle(fontSize: 14, color: Colors.black)),
-                  Text('Destination: $dest',
-                      style: const TextStyle(color: Colors.black, fontSize: 14,)),
+                  Text(
+                    "Customer: $user",
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text("Pickup: $pickup", style: TextStyle(
+                    color: Colors.black
+                  ),),
+                  Text("Destination: $dest", style: TextStyle(
+                    color: Colors.black
+                    ),),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      Text("ETA: $_etaText",
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, color: Colors.black)),
+                      Text("Distance: $_distanceText",
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, color: Colors.black),),
+                    ],
+                  ),
                 ],
               ),
             ),
           ),
+           */
+          // ---------------------------
+          // BOTTOM ACTION BUTTON
+          // ---------------------------
+
           Positioned(
-            bottom: 60,
+            bottom: 65,
             left: 12,
             right: 12,
             child: _buildActionButton(),

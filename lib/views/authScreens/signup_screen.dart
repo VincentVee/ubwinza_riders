@@ -22,12 +22,16 @@ class _SignupScreenState extends State<SignupScreen> {
   TextEditingController passwordTextEditingController = TextEditingController();
   TextEditingController confirmTextEditingController = TextEditingController();
   TextEditingController phoneTextEditingController = TextEditingController();
-  TextEditingController vehicleModelTextEditingController = TextEditingController();
-  TextEditingController vehicleColorTextEditingController = TextEditingController();
-  TextEditingController licensePlateTextEditingController = TextEditingController();
+  TextEditingController vehicleModelTextEditingController =
+  TextEditingController();
+  TextEditingController vehicleColorTextEditingController =
+  TextEditingController();
+  TextEditingController licensePlateTextEditingController =
+  TextEditingController();
   TextEditingController locationTextEditingController = TextEditingController();
 
-  String selectedVehicleType = "motorbike"; // Default value
+  /// Null at start so user explicitly chooses a type
+  String? selectedVehicleType;
 
   GlobalKey<FormState> formKey = GlobalKey<FormState>();
 
@@ -86,38 +90,49 @@ class _SignupScreenState extends State<SignupScreen> {
                   isObsecure: false,
                   enable: true,
                 ),
-                
-                // Vehicle Type Dropdown
+
+                /// Vehicle Type Dropdown (styled like other fields)
                 VehicleTypeDropdown(
+
                   selectedVehicleType: selectedVehicleType,
                   onVehicleTypeChanged: (String? newValue) {
                     setState(() {
-                      selectedVehicleType = newValue!;
+                      selectedVehicleType = newValue;
+
+                      if (selectedVehicleType != 'motorbike') {
+                        vehicleModelTextEditingController.clear();
+                        vehicleColorTextEditingController.clear();
+                        licensePlateTextEditingController.clear();
+                      }
                     });
                   },
                 ),
-                
-                CustomeTextField(
-                  textEditingController: vehicleModelTextEditingController,
-                  iconData: Icons.directions_car,
-                  hintString: "Vehicle Model (e.g., Honda CG125)",
-                  isObsecure: false,
-                  enable: true,
-                ),
-                CustomeTextField(
-                  textEditingController: vehicleColorTextEditingController,
-                  iconData: Icons.color_lens,
-                  hintString: "Vehicle Color",
-                  isObsecure: false,
-                  enable: true,
-                ),
-                CustomeTextField(
-                  textEditingController: licensePlateTextEditingController,
-                  iconData: Icons.confirmation_number,
-                  hintString: "License Plate",
-                  isObsecure: false,
-                  enable: true,
-                ),
+
+                /// Only show the following fields when the vehicle type is Motorbike
+                if (selectedVehicleType == 'motorbike') ...[
+                  CustomeTextField(
+                    textEditingController: vehicleModelTextEditingController,
+                    iconData: Icons.directions_bike,
+                    hintString: "Vehicle Model (e.g., Honda CG125)",
+                    isObsecure: false,
+                    enable: true,
+                  ),
+                  CustomeTextField(
+                    textEditingController: vehicleColorTextEditingController,
+                    iconData: Icons.color_lens,
+                    hintString: "Vehicle Color",
+                    isObsecure: false,
+                    enable: true,
+                  ),
+                  CustomeTextField(
+                    textEditingController: licensePlateTextEditingController,
+                    iconData: Icons.confirmation_number,
+                    hintString: "License Plate",
+                    isObsecure: false,
+                    enable: true,
+                  ),
+                ],
+
                 CustomeTextField(
                   textEditingController: passwordTextEditingController,
                   iconData: Icons.lock,
@@ -184,7 +199,8 @@ class _SignupScreenState extends State<SignupScreen> {
                         emailTextEditingController.text.trim(),
                         nameTextEditingController.text.trim(),
                         phoneTextEditingController.text.trim(),
-                        selectedVehicleType,
+                        selectedVehicleType ??
+                            '', // dropdown validator ensures this is set
                         vehicleModelTextEditingController.text.trim(),
                         vehicleColorTextEditingController.text.trim(),
                         licensePlateTextEditingController.text.trim(),

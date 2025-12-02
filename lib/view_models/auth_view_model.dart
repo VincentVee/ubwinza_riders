@@ -27,29 +27,47 @@ class AuthViewModel {
       String locationAddress,
       BuildContext context,
       ) async {
+    // Ensure image is selected
     if (image == null) {
       commonViewModel.showSnackBar(
           "Please select an image from gallery", context);
       return;
     }
 
+    // Password confirmation
     if (password != confirm) {
       commonViewModel.showSnackBar(
           "Password and confirmation do not match!", context);
       return;
     }
 
+    // Required for all users
     if (password.isEmpty ||
         confirm.isEmpty ||
         email.isEmpty ||
         name.isEmpty ||
-        phone.isEmpty || selectedVehicleType.isEmpty ||
-        vehicleModel.isEmpty ||
-        vehicleColor.isEmpty ||
-        licensePlate.isEmpty ||
+        phone.isEmpty ||
+        selectedVehicleType.isEmpty ||
         locationAddress.isEmpty) {
-      commonViewModel.showSnackBar("Please enter all the fields!", context);
+      commonViewModel.showSnackBar("Please enter all the required fields!", context);
       return;
+    }
+
+    // Vehicle field validation based on type
+    if (selectedVehicleType == "motorbike") {
+      if (vehicleModel.isEmpty ||
+          vehicleColor.isEmpty ||
+          licensePlate.isEmpty) {
+        commonViewModel.showSnackBar(
+            "Please enter vehicle model, color, and plate for a motorbike!",
+            context);
+        return;
+      }
+    } else if (selectedVehicleType == "bicycle") {
+      // Allow optional values — no validation needed
+      vehicleModel = vehicleModel.isEmpty ? "" : vehicleModel;
+      vehicleColor = vehicleColor.isEmpty ? "" : vehicleColor;
+      licensePlate = licensePlate.isEmpty ? "" : licensePlate;
     }
 
     // Email validation
@@ -68,7 +86,7 @@ class AuthViewModel {
       return;
     }
 
-    // Optional: guard against null GPS position
+    // GPS safety check
     final lat = position?.latitude;
     final lng = position?.longitude;
     if (lat == null || lng == null) {
@@ -77,6 +95,7 @@ class AuthViewModel {
 
     commonViewModel.showSnackBar("Please wait...", context);
 
+    // Create user in Firebase Auth
     final fb_auth.User? currentUser =
     await createUserInFirebase(email, password, context);
 
@@ -85,8 +104,10 @@ class AuthViewModel {
       return;
     }
 
+    // Upload profile image
     final String downloadUrl = await uploadImageToFirebase(image);
 
+    // Save user info to Firestore
     final ok = await saveUserToFireStore(
       currentUser: currentUser,
       downloadUrl: downloadUrl,
@@ -105,6 +126,7 @@ class AuthViewModel {
 
     if (!ok) return;
 
+    // Navigate after successful account creation
     if (context.mounted) {
       commonViewModel.showSnackBar("Account created successfully", context);
       Navigator.push(
@@ -115,10 +137,7 @@ class AuthViewModel {
   }
 
   Future<fb_auth.User?> createUserInFirebase(
-      String email,
-      String password,
-      BuildContext context,
-      ) async {
+      String email, String password, BuildContext context) async {
     try {
       final cred = await fb_auth.FirebaseAuth.instance
           .createUserWithEmailAndPassword(email: email, password: password);
@@ -180,10 +199,10 @@ class AuthViewModel {
         if (longitude != null) "longitude": longitude,
         "createdAt": FieldValue.serverTimestamp(),
         "status": "approved",
-        "isOnline":true
+        "isOnline": true
       }, SetOptions(merge: true));
 
-      // Save to shared preferences
+      // Save locally (SharedPreferences)
       await sharedPreferences!.setString("uid", currentUser.uid);
       await sharedPreferences!.setString("email", email);
       await sharedPreferences!.setString("name", name);
@@ -264,7 +283,7 @@ class AuthViewModel {
       if (dataSnapshot.exists) {
         if (dataSnapshot.data()!["status"] == "approved") {
           final data = dataSnapshot.data()!;
-          
+
           await appLifecycleService?.setUserOnline();
 
           await sharedPreferences!.setString("uid", currentFirebaseUser.uid);
@@ -272,13 +291,20 @@ class AuthViewModel {
           await sharedPreferences!.setString("name", data["name"]);
           await sharedPreferences!.setString("imageUrl", data["imageUrl"]);
           await sharedPreferences!.setString("phone", data["phone"] ?? "");
-          await sharedPreferences!.setString("vehicleType", data["vehicleType"] ?? "motorbike");
-          await sharedPreferences!.setString("vehicleModel", data["vehicleModel"] ?? "");
-          await sharedPreferences!.setString("vehicleColor", data["vehicleColor"] ?? "");
-          await sharedPreferences!.setString("licensePlate", data["licensePlate"] ?? "");
-          await sharedPreferences!.setString("address", data["address"] ?? "");
-          await sharedPreferences!.setDouble("rating", (data["rating"] ?? 5.0).toDouble());
-          await sharedPreferences!.setInt("totalRides", (data["totalRides"] ?? 0).toInt());
+          await sharedPreferences!.setString(
+              "vehicleType", data["vehicleType"] ?? "motorbike");
+          await sharedPreferences!.setString(
+              "vehicleModel", data["vehicleModel"] ?? "");
+          await sharedPreferences!.setString(
+              "vehicleColor", data["vehicleColor"] ?? "");
+          await sharedPreferences!.setString(
+              "licensePlate", data["licensePlate"] ?? "");
+          await sharedPreferences!.setString(
+              "address", data["address"] ?? "");
+          await sharedPreferences!.setDouble(
+              "rating", (data["rating"] ?? 5.0).toDouble());
+          await sharedPreferences!
+              .setInt("totalRides", (data["totalRides"] ?? 0).toInt());
         } else {
           commonViewModel.showSnackBar("You are blocked by admin!", context);
           fb_auth.FirebaseAuth.instance.signOut();
@@ -293,21 +319,17 @@ class AuthViewModel {
 
   Future<void> logout(BuildContext context) async {
     try {
-      // Set user offline before signing out
       await appLifecycleService?.setUserOffline();
-      
-      // Clear shared preferences
+
       await sharedPreferences!.clear();
-      
-      // Sign out from Firebase
+
       await fb_auth.FirebaseAuth.instance.signOut();
-      
-      // Navigate to login screen or splash screen
+
       if (context.mounted) {
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const MySplashScreen()),
-          (route) => false,
+              (route) => false,
         );
       }
     } catch (e) {
