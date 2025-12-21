@@ -25,8 +25,10 @@ class _MySplashScreenState extends State<MySplashScreen> {
         Navigator.push(context, MaterialPageRoute(builder: (c) => AuthScreen()))
 
       } else {
-        Navigator.push(context, MaterialPageRoute(builder: (c) => HomeScreen()))
-
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        )
       }
     });
   }
@@ -49,7 +51,7 @@ class _MySplashScreenState extends State<MySplashScreen> {
             Padding(
               padding: const EdgeInsets.all(10.0),
               child: Image.asset(
-                "images/splash.webp"
+                "images/ubwinza-icon.jpeg"
               ),
             ),
             const Text(

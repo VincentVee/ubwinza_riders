@@ -1,4 +1,6 @@
 
+import 'dart:ui';
+
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,6 +9,7 @@ Position? position;
 
 List<Placemark>? placeMark;
 String googleApiKey = "AIzaSyC24a0-yk2HG6ONDtpbPRlL_lWkxeqqQ2Y";
+final Color primaryColor = Color(0xFF1A2B7B);
 
 String fullAddress = "";
 SharedPreferences? sharedPreferences;

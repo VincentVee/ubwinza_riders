@@ -12,7 +12,182 @@ import '../global/global_instances.dart';
 import '../global/global_vars.dart';
 import '../views/mainScreens/home_screen.dart';
 
-class AuthViewModel {
+// ------------------------------------------------------------------------
+// ⭐ 1. MISSING RIDER USER MODEL (REQUIRED BY PROFILE SCREEN)
+// ------------------------------------------------------------------------
+class RiderUser {
+  final String? uid;
+  final String? name;
+  final String? email;
+  final String? imageUrl;
+  final String? status;
+  final String? phone;
+  final String? vehicleType;
+  final double? rating;
+  final int? totalRides;
+
+  RiderUser({
+    this.uid,
+    this.name,
+    this.email,
+    this.imageUrl,
+    this.status,
+    this.phone,
+    this.vehicleType,
+    this.rating,
+    this.totalRides,
+  });
+
+  // Helper method to create RiderUser from Firestore data/SharedPreferences
+  factory RiderUser.fromMap(Map<String, dynamic> data) {
+    return RiderUser(
+      uid: data["uid"],
+      name: data["name"],
+      email: data["email"],
+      imageUrl: data["imageUrl"],
+      status: data["status"],
+      phone: data["phone"],
+      vehicleType: data["vehicleType"],
+      rating: (data["rating"] ?? 0.0).toDouble(),
+      totalRides: (data["totalRides"] ?? 0).toInt(),
+    );
+  }
+}
+
+// ------------------------------------------------------------------------
+// ⭐ 2. AUTH VIEW MODEL (EXTENDS ChangeNotifier for Profile Screen updates)
+// ------------------------------------------------------------------------
+class AuthViewModel with ChangeNotifier {
+  RiderUser? _currentUser;
+  final ImagePicker _picker = ImagePicker();
+
+  // Load initial user data from shared preferences when AuthViewModel is created
+  AuthViewModel() {
+    _initializeUser();
+  }
+
+  void _initializeUser() {
+    if (sharedPreferences!.containsKey("uid")) {
+      _currentUser = RiderUser(
+        uid: sharedPreferences!.getString("uid"),
+        name: sharedPreferences!.getString("name"),
+        email: sharedPreferences!.getString("email"),
+        imageUrl: sharedPreferences!.getString("imageUrl"),
+        status: sharedPreferences!.getString("status"),
+        phone: sharedPreferences!.getString("phone"),
+        vehicleType: sharedPreferences!.getString("vehicleType"),
+        rating: sharedPreferences!.getDouble("rating"),
+        totalRides: sharedPreferences!.getInt("totalRides"),
+      );
+    }
+  }
+
+  // ⭐ MISSING FUNCTION 1: getCurrentUser
+  RiderUser getCurrentUser() {
+    // Returns the current user model, initializing from SharedPreferences if null
+    return _currentUser ?? RiderUser();
+  }
+
+  // ⭐ MISSING FUNCTION 2: pickImageAndUpdate
+  Future<void> pickImageAndUpdate(BuildContext context) async {
+    final XFile? pickedFile = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 70,
+    );
+
+    if (pickedFile == null) {
+      commonViewModel.showSnackBar("No image selected.", context);
+      return;
+    }
+
+    commonViewModel.showSnackBar("Uploading profile picture...", context);
+
+    try {
+      // 1. Upload new image
+      final String downloadUrl = await uploadImageToFirebase(pickedFile);
+      final uid = fb_auth.FirebaseAuth.instance.currentUser!.uid;
+
+      // 2. Update Firestore
+      await FirebaseFirestore.instance.collection("riders").doc(uid).update({
+        "imageUrl": downloadUrl,
+      });
+
+      // 3. Update SharedPreferences
+      await sharedPreferences!.setString("imageUrl", downloadUrl);
+
+      // 4. Update local model and notify listeners
+      _currentUser = RiderUser(
+        uid: uid,
+        name: _currentUser?.name,
+        email: _currentUser?.email,
+        imageUrl: downloadUrl, // New image URL
+        status: _currentUser?.status,
+        phone: _currentUser?.phone,
+        vehicleType: _currentUser?.vehicleType,
+        rating: _currentUser?.rating,
+        totalRides: _currentUser?.totalRides,
+      );
+      notifyListeners();
+
+      if (context.mounted) {
+        commonViewModel.showSnackBar("Profile picture updated successfully!", context);
+      }
+    } catch (e) {
+      debugPrint('Error updating profile picture: $e');
+      if (context.mounted) {
+        commonViewModel.showSnackBar("Failed to update picture: $e", context);
+      }
+    }
+  }
+
+  // ⭐ MISSING FUNCTION 3: updateUserName
+  Future<void> updateUserName(String newName, BuildContext context) async {
+    if (newName.trim().isEmpty) {
+      commonViewModel.showSnackBar("Name cannot be empty.", context);
+      return;
+    }
+
+    commonViewModel.showSnackBar("Updating name...", context);
+
+    try {
+      final uid = fb_auth.FirebaseAuth.instance.currentUser!.uid;
+
+      // 1. Update Firestore
+      await FirebaseFirestore.instance.collection("riders").doc(uid).update({
+        "name": newName,
+      });
+
+      // 2. Update SharedPreferences
+      await sharedPreferences!.setString("name", newName);
+
+      // 3. Update local model and notify listeners
+      _currentUser = RiderUser(
+        uid: uid,
+        name: newName, // New name
+        email: _currentUser?.email,
+        imageUrl: _currentUser?.imageUrl,
+        status: _currentUser?.status,
+        phone: _currentUser?.phone,
+        vehicleType: _currentUser?.vehicleType,
+        rating: _currentUser?.rating,
+        totalRides: _currentUser?.totalRides,
+      );
+      notifyListeners();
+
+      if (context.mounted) {
+        commonViewModel.showSnackBar("Name updated successfully!", context);
+      }
+    } catch (e) {
+      debugPrint('Error updating name: $e');
+      if (context.mounted) {
+        commonViewModel.showSnackBar("Failed to update name: $e", context);
+      }
+    }
+  }
+// ------------------------------------------------------------------------
+// --- EXISTING FUNCTIONS (WITH MINOR ADJUSTMENTS) ---
+// ------------------------------------------------------------------------
+
   Future<void> validateSignUpForm(
       XFile? image,
       String password,
@@ -27,6 +202,7 @@ class AuthViewModel {
       String locationAddress,
       BuildContext context,
       ) async {
+    // ... (Existing validation logic) ...
     // Ensure image is selected
     if (image == null) {
       commonViewModel.showSnackBar(
@@ -126,6 +302,10 @@ class AuthViewModel {
 
     if (!ok) return;
 
+    // ⭐ Update local model after successful sign up
+    _currentUser = RiderUser.fromMap(await FirebaseFirestore.instance.collection("riders").doc(currentUser.uid).get().then((doc) => doc.data()!));
+    notifyListeners();
+
     // Navigate after successful account creation
     if (context.mounted) {
       commonViewModel.showSnackBar("Account created successfully", context);
@@ -138,6 +318,7 @@ class AuthViewModel {
 
   Future<fb_auth.User?> createUserInFirebase(
       String email, String password, BuildContext context) async {
+    // ... (Existing createUserInFirebase logic) ...
     try {
       final cred = await fb_auth.FirebaseAuth.instance
           .createUserWithEmailAndPassword(email: email, password: password);
@@ -152,6 +333,7 @@ class AuthViewModel {
   }
 
   Future<String> uploadImageToFirebase(XFile image) async {
+    // ... (Existing uploadImageToFirebase logic) ...
     final String fileName = DateTime.now().microsecondsSinceEpoch.toString();
     final fs_store.Reference ref =
     fs_store.FirebaseStorage.instance.ref().child('ridersimages/$fileName');
@@ -177,6 +359,7 @@ class AuthViewModel {
     double? longitude,
     required BuildContext context,
   }) async {
+    // ... (Existing saveUserToFireStore logic) ...
     try {
       await FirebaseFirestore.instance
           .collection("riders")
@@ -213,8 +396,9 @@ class AuthViewModel {
       await sharedPreferences!.setString("vehicleColor", vehicleColor);
       await sharedPreferences!.setString("licensePlate", licensePlate);
       await sharedPreferences!.setString("address", locationAddress);
+      await sharedPreferences!.setString("status", _currentUser!.status!);
       await sharedPreferences!.setBool("isOnline", true);
-      await sharedPreferences!.setDouble("rating", 0.0);
+      await sharedPreferences!.setDouble("rating", 5.0); // Default rating
       await sharedPreferences!.setInt("totalRides", 0);
 
       return true;
@@ -234,6 +418,7 @@ class AuthViewModel {
 
   Future<void> validateSignInForm(
       String email, String password, BuildContext context) async {
+    // ... (Existing validateSignInForm logic) ...
     if (email.isEmpty || password.isEmpty) {
       commonViewModel.showSnackBar("Email and Password are required!", context);
       return;
@@ -248,6 +433,10 @@ class AuthViewModel {
 
     await readDataFromFirestoreAndSetDataLocally(currentFirebaseUser, context);
 
+    // ⭐ After reading data, update the local model
+    _initializeUser();
+    notifyListeners();
+
     Navigator.push(context, MaterialPageRoute(builder: (_) => HomeScreen()));
 
     commonViewModel.showSnackBar("Signed in successfully...!", context);
@@ -255,6 +444,7 @@ class AuthViewModel {
 
   Future<fb_auth.User?> signInUser(
       String email, String password, BuildContext context) async {
+    // ... (Existing signInUser logic) ...
     fb_auth.User? currentUser;
 
     await fb_auth.FirebaseAuth.instance
@@ -262,7 +452,7 @@ class AuthViewModel {
         .then((valueAuth) {
       currentUser = valueAuth.user;
     }).catchError((errorMsg) {
-      commonViewModel.showSnackBar(errorMsg, context);
+      commonViewModel.showSnackBar(errorMsg.toString(), context);
     });
 
     if (currentUser == null) {
@@ -275,15 +465,16 @@ class AuthViewModel {
 
   Future<void> readDataFromFirestoreAndSetDataLocally(
       fb_auth.User currentFirebaseUser, BuildContext context) async {
+    // ... (Existing readDataFromFirestoreAndSetDataLocally logic) ...
     await FirebaseFirestore.instance
         .collection("riders")
         .doc(currentFirebaseUser.uid)
         .get()
         .then((dataSnapshot) async {
       if (dataSnapshot.exists) {
-        if (dataSnapshot.data()!["status"] == "approved") {
-          final data = dataSnapshot.data()!;
+        final data = dataSnapshot.data()!;
 
+        if (data["status"] == "approved") {
           await appLifecycleService?.setUserOnline();
 
           await sharedPreferences!.setString("uid", currentFirebaseUser.uid);
@@ -305,6 +496,9 @@ class AuthViewModel {
               "rating", (data["rating"] ?? 5.0).toDouble());
           await sharedPreferences!
               .setInt("totalRides", (data["totalRides"] ?? 0).toInt());
+          await sharedPreferences!.setString("status", data["status"]);
+          await sharedPreferences!.setBool("isOnline", data["isOnline"]);
+
         } else {
           commonViewModel.showSnackBar("You are blocked by admin!", context);
           fb_auth.FirebaseAuth.instance.signOut();
@@ -314,14 +508,19 @@ class AuthViewModel {
             "This rider record does not exist", context);
         fb_auth.FirebaseAuth.instance.signOut();
       }
+    }).catchError((error) {
+      commonViewModel.showSnackBar("Error reading data: ${error.toString()}", context);
+      fb_auth.FirebaseAuth.instance.signOut();
     });
   }
 
   Future<void> logout(BuildContext context) async {
+    // ... (Existing logout logic) ...
     try {
       await appLifecycleService?.setUserOffline();
 
       await sharedPreferences!.clear();
+      _currentUser = null; // Clear local model
 
       await fb_auth.FirebaseAuth.instance.signOut();
 

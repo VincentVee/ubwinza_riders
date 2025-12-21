@@ -2,8 +2,10 @@ import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ubwinza_riders/features/services/app_service_life_cycle.dart';
+import 'package:ubwinza_riders/view_models/auth_view_model.dart';
 import 'package:ubwinza_riders/views/splashScreen/splash_screen.dart';
 
 import 'global/global_vars.dart';
@@ -26,7 +28,15 @@ Future<void> main() async {
     }
   });
 
-  runApp(const MyApp());
+
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AuthViewModel()),
+      ],
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatefulWidget {

@@ -46,6 +46,9 @@ dependencies:
   google_maps_flutter:
   webview_flutter: ^4.4.2
   flutter_tts: ^4.0.2
+  intl:
+  provider:
+  flutter_launcher_icons:
 
 
 dev_dependencies:
@@ -63,6 +66,16 @@ dev_dependencies:
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
+  # ⭐ CORRECT PLACEMENT: flutter_launcher_icons MUST be here
+  flutter_launcher_icons: "^0.13.1" # Use the latest version
+
+# ⭐ CONFIGURATION BLOCK for flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: true
+  # ✅ CORRECTED PATH: Use the path relative to the project root.
+  # Assuming the file is directly inside the 'images' folder.
+  image_path: "images/ubwinza-icon.jpeg"
 flutter:
 
   # The following line ensures that the Material Icons font is

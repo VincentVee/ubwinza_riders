@@ -26,7 +26,7 @@ class _SignInScreenState extends State<SignInScreen> {
             child: Padding(
               padding: const EdgeInsets.all(8.0),
               child: Image.asset(
-                "images/logo.png",
+                "images/ubwinza-icon.jpeg",
                 height: 270,
               ),
             ),

@@ -53,6 +53,8 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   bool _isLoading = true;
   bool _canProceedToDestination = false;
   bool _disposed = false;
+  // ⭐ NEW: For Start Ride button loader
+  bool _isRouting = false;
 
   // ETA & Distance
   String _etaText = "";
@@ -63,10 +65,12 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   LatLng? _currentLocation;
   LatLng? _lastLocation;
 
-  // Camera
+  // Camera Control
   LatLng? _routeTarget;
   double _lastBearing = 0;
-  DateTime? _lastCameraUpdate;
+
+  // ⭐ KEY FIX: Controls whether map snaps to driver or stays put
+  bool _autoCameraEnabled = true;
 
   // Rerouting
   DateTime? _lastRerouteTime;
@@ -160,8 +164,9 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       );
     }
   }
+
   // ---------------------------
-  // GOOGLE DIRECTIONS → POLYLINE + STEPS + ETA
+  // GOOGLE DIRECTIONS
   // ---------------------------
 
   Future<void> _getPolyline(
@@ -171,6 +176,7 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       String id, {
         bool buildNavSteps = true,
       }) async {
+    // NOTE: `global_vars.dart` must contain `googleApiKey`
     final url =
         'https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${destination.latitude},${destination.longitude}&key=$googleApiKey';
 
@@ -185,7 +191,6 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
     final encoded = route['overview_polyline']['points'];
     final points = _decodePolyline(encoded);
 
-    // Extract ETA + Distance
     final legs = route['legs'] as List;
     final leg = legs.first;
 
@@ -265,11 +270,16 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   }
 
   // ---------------------------
-  // START RIDE → STATUS "IN‑PROGRESS"
+  // START RIDE
   // ---------------------------
 
   Future<void> _startRide() async {
-    await _tts.speak("Starting your ride. Head to the pickup location.");
+    // ⭐ START OF CHANGE: Set loading state
+    setState(() {
+      _isRouting = true;
+    });
+
+    await _tts.speak("Starting your ride.");
 
     await _firestore.collection('requests').doc(widget.requestId).update({
       'status': 'in-progress',
@@ -279,6 +289,13 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
     final pos = await Geolocator.getCurrentPosition();
     _currentLocation = LatLng(pos.latitude, pos.longitude);
 
+    // Initial driver location push
+    await _firestore.collection('requests').doc(widget.requestId).update({
+      'driverLat': _currentLocation!.latitude,
+      'driverLog': _currentLocation!.longitude,
+    });
+
+
     final pickup = LatLng(
       requestData!['pickupLat'],
       requestData!['pickupLng'],
@@ -286,6 +303,7 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
     _routeTarget = pickup;
 
+    // This is the long-running operation that needs the loader
     await _getPolyline(
       _currentLocation!,
       _routeTarget!,
@@ -294,13 +312,19 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       buildNavSteps: true,
     );
 
-    setState(() => _tripStage = "to_pickup");
+    // ⭐ END OF CHANGE: Clear loading state and set new trip stage
+    setState(() {
+      _tripStage = "to_pickup";
+      _autoCameraEnabled = true; // Enable auto-follow on start
+      _isRouting = false;
+    });
 
     _startLocationTracking();
   }
 
   void _startLocationTracking() {
     _locationTimer?.cancel();
+    // Update location every 1 second
     _locationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _updateDriverLocation();
     });
@@ -311,9 +335,22 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   // ---------------------------
 
   Future<void> _updateDriverLocation() async {
+    if (_tripStage == 'idle' || _tripStage == 'arrived') return;
+
     try {
-      final pos = await Geolocator.getCurrentPosition();
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
       _currentLocation = LatLng(pos.latitude, pos.longitude);
+
+      // PUSHING NEW LAT/LNG TO FIRESTORE
+      await _firestore.collection('requests').doc(widget.requestId).update({
+        'driverLat': _currentLocation!.latitude,
+        'driverLng': _currentLocation!.longitude,
+        // Optional: Add timestamp for last update
+        // 'lastLocationUpdate': FieldValue.serverTimestamp(),
+      });
+
 
       final pickup = LatLng(
         requestData!['pickupLat'],
@@ -326,7 +363,11 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       );
 
       _setMarkers(pickup, destination);
-      await _smoothFollowCamera();
+
+      // Only move camera if user hasn't disabled it
+      if (_autoCameraEnabled) {
+        await _smoothFollowCamera();
+      }
 
       final distToPickup = Geolocator.distanceBetween(
         _currentLocation!.latitude,
@@ -344,7 +385,8 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
 
       // ARRIVING AT PICKUP
       if (_tripStage == "to_pickup") {
-        final canProceed = distToPickup < 35;
+        // ⭐ REQUESTED CHANGE: Use 150 meters instead of 35 meters
+        final canProceed = distToPickup < 150;
 
         if (canProceed && !_canProceedToDestination) {
           await _tts.speak("You have arrived at the pickup.");
@@ -353,6 +395,13 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
             _currentInstruction =
             "Arrived at pickup. Confirm parcel and press 'Heading to Destination'.";
             _canProceedToDestination = true;
+          });
+        }
+        // OPTIONAL: Added state reversal if driver moves away
+        else if (!canProceed && _canProceedToDestination) {
+          setState(() {
+            _currentInstruction = "Move closer to the pickup (within 150m).";
+            _canProceedToDestination = false;
           });
         }
       }
@@ -396,135 +445,25 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   }
 
   // ---------------------------
-  // TURN‑BY‑TURN ANNOUNCER
-  // ---------------------------
-
-  bool _isRoundaboutStep(Map<String, dynamic> step) {
-    final maneuver = step['maneuver'] ?? "";
-    return maneuver.contains("roundabout");
-  }
-
-
-  int _extractRoundaboutExit(String instruction) {
-    final match = RegExp(r'(\d+)(st|nd|rd|th)').firstMatch(instruction);
-    if (match != null) {
-      return int.tryParse(match.group(1)!) ?? 0;
-    }
-    return 0;
-  }
-
-
-  String _lastSpoken = "";
-  DateTime _lastSpeechTime = DateTime.now().subtract(const Duration(seconds: 10));
-
-  final List<int> _ttsDistances = [300, 150, 80, 40, 20];
-  int _lastDistanceBucket = -1;
-
-  Future<void> _announceNextTurn() async {
-    if (_currentLocation == null) return;
-    if (_navSteps.isEmpty || _currentStepIndex >= _navSteps.length) return;
-
-    final step = _navSteps[_currentStepIndex];
-    final end = LatLng(step['endLat'], step['endLng']);
-    final maneuver = step['maneuver'] ?? "";
-    final instruction = _stripHtml(step['instruction']);
-    final dist = Geolocator.distanceBetween(
-      _currentLocation!.latitude,
-      _currentLocation!.longitude,
-      end.latitude,
-      end.longitude,
-    );
-
-    // -- ROUNDABOUT DETECTION --
-    if (_isRoundaboutStep(step)) {
-      final exit = _extractRoundaboutExit(instruction);
-
-      String spoken;
-      if (dist > 40) {
-        spoken = exit > 0
-            ? "At the roundabout, take the ${exit}th exit."
-            : "Approaching a roundabout.";
-      } else {
-        spoken = exit > 0
-            ? "Take the ${exit}th exit."
-            : "Exit the roundabout.";
-        HapticFeedback.mediumImpact();
-        _currentStepIndex++;
-      }
-
-      if (spoken != _currentInstruction) {
-        setState(() => _currentInstruction = spoken);
-      }
-
-      if (spoken != _lastSpoken &&
-          DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
-        _lastSpeechTime = DateTime.now();
-        _lastSpoken = spoken;
-        await _tts.speak(spoken);
-      }
-
-      return; // roundabout handled, stop here
-    }
-
-    // -----------------------
-    // NORMAL TURN LOGIC
-    // -----------------------
-
-    int bucket = _ttsDistances.firstWhere(
-          (d) => dist >= d,
-      orElse: () => 0,
-    );
-
-    if (bucket == _lastDistanceBucket && bucket != 0) {
-      return; // same bucket, no repeat
-    }
-
-    String spokenText;
-
-    if (bucket > 20) {
-      spokenText = "In $bucket meters, $instruction";
-    } else if (dist < 20) {
-      spokenText = instruction;
-      HapticFeedback.mediumImpact();
-      _currentStepIndex++;
-    } else {
-      return;
-    }
-
-    setState(() => _currentInstruction = spokenText);
-
-    _lastDistanceBucket = bucket;
-
-    if (spokenText != _lastSpoken &&
-        DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
-      _lastSpeechTime = DateTime.now();
-      _lastSpoken = spokenText;
-      await _tts.speak(spokenText);
-    }
-  }
-
-
-
-  // ---------------------------
-  // HEADING‑ALIGNED CAMERA
+  // HEADING‑ALIGNED CAMERA (STRAIGHT VIEW)
   // ---------------------------
 
   Future<void> _smoothFollowCamera() async {
     if (_currentLocation == null) return;
 
     final controller = await _controller.future;
-
     double bearing = _lastBearing;
 
+    // Only update bearing if we moved significantly (> 5 meters)
     if (_lastLocation != null) {
-      final movement = Geolocator.distanceBetween(
+      final dist = Geolocator.distanceBetween(
         _lastLocation!.latitude,
         _lastLocation!.longitude,
         _currentLocation!.latitude,
         _currentLocation!.longitude,
       );
 
-      if (movement > 2) {
+      if (dist > 5) {
         bearing = Geolocator.bearingBetween(
           _lastLocation!.latitude,
           _lastLocation!.longitude,
@@ -542,15 +481,108 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
         CameraPosition(
           target: _currentLocation!,
           zoom: 18,
-          tilt: 0,      // because you chose FLAT MODE
-          bearing: bearing,
+          tilt: 0, // 0 = Flat/Straight View
+          bearing: bearing, // Rotates map so "Up" is where you are going
         ),
       ),
     );
   }
 
   // ---------------------------
-  // ROUTE DEVIATION LOGIC
+  // RE-CENTER ACTION
+  // ---------------------------
+  void _recenterCamera() {
+    setState(() {
+      _autoCameraEnabled = true;
+    });
+    _smoothFollowCamera();
+  }
+
+  // ---------------------------
+  // TURN ANNOUNCER (UNCHANGED)
+  // ---------------------------
+
+  bool _isRoundaboutStep(Map<String, dynamic> step) {
+    final maneuver = step['maneuver'] ?? "";
+    return maneuver.contains("roundabout");
+  }
+
+  int _extractRoundaboutExit(String instruction) {
+    final match = RegExp(r'(\d+)(st|nd|rd|th)').firstMatch(instruction);
+    if (match != null) {
+      return int.tryParse(match.group(1)!) ?? 0;
+    }
+    return 0;
+  }
+
+  String _lastSpoken = "";
+  DateTime _lastSpeechTime = DateTime.now().subtract(const Duration(seconds: 10));
+  final List<int> _ttsDistances = [300, 150, 80, 40, 20];
+  int _lastDistanceBucket = -1;
+
+  Future<void> _announceNextTurn() async {
+    if (_currentLocation == null) return;
+    if (_navSteps.isEmpty || _currentStepIndex >= _navSteps.length) return;
+
+    final step = _navSteps[_currentStepIndex];
+    final end = LatLng(step['endLat'], step['endLng']);
+    final instruction = _stripHtml(step['instruction']);
+    final dist = Geolocator.distanceBetween(
+      _currentLocation!.latitude,
+      _currentLocation!.longitude,
+      end.latitude,
+      end.longitude,
+    );
+
+    if (_isRoundaboutStep(step)) {
+      final exit = _extractRoundaboutExit(instruction);
+      String spoken;
+      if (dist > 40) {
+        spoken = exit > 0
+            ? "At the roundabout, take the ${exit}th exit."
+            : "Approaching a roundabout.";
+      } else {
+        spoken = exit > 0
+            ? "Take the ${exit}th exit."
+            : "Exit the roundabout.";
+        HapticFeedback.mediumImpact();
+        _currentStepIndex++;
+      }
+      if (spoken != _currentInstruction) setState(() => _currentInstruction = spoken);
+      if (spoken != _lastSpoken && DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
+        _lastSpeechTime = DateTime.now();
+        _lastSpoken = spoken;
+        await _tts.speak(spoken);
+      }
+      return;
+    }
+
+    int bucket = _ttsDistances.firstWhere((d) => dist >= d, orElse: () => 0);
+    if (bucket == _lastDistanceBucket && bucket != 0) return;
+
+    String spokenText;
+    if (bucket > 20) {
+      spokenText = "In $bucket meters, $instruction";
+    } else if (dist < 20) {
+      spokenText = instruction;
+      HapticFeedback.mediumImpact();
+      _currentStepIndex++;
+    } else {
+      return;
+    }
+
+    setState(() => _currentInstruction = spokenText);
+    _lastDistanceBucket = bucket;
+
+    if (spokenText != _lastSpoken && DateTime.now().difference(_lastSpeechTime).inSeconds >= 6) {
+      _lastSpeechTime = DateTime.now();
+      _lastSpoken = spokenText;
+      await _tts.speak(spokenText);
+    }
+  }
+
+  // ---------------------------
+  // UTILS
   // ---------------------------
 
   bool _isOffRoute(LatLng pos, List<LatLng> route) {
@@ -567,134 +599,84 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
     return minDist > 40;
   }
 
-  // ---------------------------
-  // PROCEED TO DESTINATION
-  // ---------------------------
-
   Future<void> _proceedToDestination() async {
     if (!_canProceedToDestination) {
       await _tts.speak("Move closer to the pickup first.");
       return;
     }
 
-    final destination =
-    LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
+    // ⭐ OPTIONAL: Add loading state here too, as it involves route calc
+    // if (!_disposed) setState(() => _isRouting = true);
 
+    final destination = LatLng(requestData!['destinationLat'], requestData!['destinationLng']);
     _routeTarget = destination;
-
     await _tts.speak("Heading to destination.");
+    await _firestore.collection('requests').doc(widget.requestId).update({'status': 'heading_to_destination'});
+    await _getPolyline(_currentLocation!, destination, Colors.green, "activeRoute", buildNavSteps: true);
 
-    await _firestore
-        .collection('requests')
-        .doc(widget.requestId)
-        .update({'status': 'heading_to_destination'});
-
-    await _getPolyline(
-      _currentLocation!,
-      destination,
-      Colors.green,
-      "activeRoute",
-      buildNavSteps: true,
-    );
+    // ⭐ OPTIONAL: Clear loading state here
+    // if (!_disposed) setState(() => _isRouting = false);
 
     setState(() {
       _tripStage = "to_destination";
       _canProceedToDestination = false;
+      _autoCameraEnabled = true; // Re-enable auto follow
     });
   }
-
-  // ---------------------------
-  // COMPLETE RIDE
-  // ---------------------------
 
   Future<void> _completeRide() async {
     await _tts.speak("Ride completed.");
     await _firestore.collection('requests').doc(widget.requestId).update({
       'status': 'completed',
       'completedAt': DateTime.now(),
+      'driverLat': null, // Clear driver location on completion
+      'driverLng': null,
     });
     Navigator.pop(context);
   }
 
-  // ---------------------------
-  // LANE GUIDANCE WIDGET
-  // ---------------------------
-
   Widget _laneGuidanceWidget(Map<String, dynamic> step) {
     final lanes = step['lanes'] as List<dynamic>?;
-
     if (lanes == null || lanes.isEmpty) return const SizedBox();
-
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: lanes.map((lane) {
         final valid = lane['valid'] ?? false;
         final indication = (lane['indications'] as List).join(", ");
-
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 6),
-          padding: const EdgeInsets.symmetric(
-              horizontal: 12, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
             color: valid ? Colors.green : Colors.grey.shade800,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
             indication.toUpperCase(),
-            style: TextStyle(
-              color: valid ? Colors.white : Colors.white70,
-              fontWeight: FontWeight.bold,
-            ),
+            style: TextStyle(color: valid ? Colors.white : Colors.white70, fontWeight: FontWeight.bold),
           ),
         );
       }).toList(),
     );
   }
 
-  // ---------------------------
-  // BIG TURN ARROW
-  // ---------------------------
-
   IconData _turnIcon(String maneuver) {
     switch (maneuver) {
-      case "turn-left":
-        return Icons.turn_left;
-      case "turn-right":
-        return Icons.turn_right;
-      case "uturn-left":
-      case "uturn-right":
-        return Icons.u_turn_left;
-      case "fork-left":
-        return Icons.turn_slight_left;
-      case "fork-right":
-        return Icons.turn_slight_right;
-      default:
-        return Icons.straight;
+      case "turn-left": return Icons.turn_left;
+      case "turn-right": return Icons.turn_right;
+      case "uturn-left": case "uturn-right": return Icons.u_turn_left;
+      case "fork-left": return Icons.turn_slight_left;
+      case "fork-right": return Icons.turn_slight_right;
+      default: return Icons.straight;
     }
   }
 
   Widget _bigTurnArrow(String maneuver) {
-    return Icon(
-      _turnIcon(maneuver),
-      size: 70,
-      color: Colors.blueAccent,
-    );
+    return Icon(_turnIcon(maneuver), size: 70, color: Colors.blueAccent);
   }
-
-  // ---------------------------
-  // HTML CLEANER
-  // ---------------------------
 
   String _stripHtml(String html) {
-    return html
-        .replaceAll(RegExp(r'<[^>]*>'), '')
-        .replaceAll('&nbsp;', ' ')
-        .replaceAll('&amp;', '&');
+    return html.replaceAll(RegExp(r'<[^>]*>'), '').replaceAll('&nbsp;', ' ').replaceAll('&amp;', '&');
   }
-
-  // ---------------------------
-  // SET MARKERS (Driver, Pickup, Destination)
-  // ---------------------------
 
   void _setMarkers(LatLng pickup, LatLng destination) {
     final markers = <Marker>{
@@ -711,57 +693,59 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       ),
     };
-
     if (_currentLocation != null) {
       markers.add(
         Marker(
           markerId: const MarkerId('driver'),
           position: _currentLocation!,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueGreen,
-          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+          rotation: _lastBearing, // Rotate icon to match car direction
         ),
       );
     }
+    if (!_disposed) setState(() => _markers = markers);
+  }
 
-    if (!_disposed) {
-      setState(() => _markers = markers);
+  Widget _buildActionButton() {
+    // ⭐ NEW: Show loader if routing is in progress
+    if (_isRouting) {
+      return _loadingButton("Preparing Route...");
+    }
+
+    switch (_tripStage) {
+      case "idle": return _button("Start Ride", primaryColor, _startRide);
+      case "to_pickup": return _button("Heading to Destination", _canProceedToDestination ? Colors.green : Colors.grey, _proceedToDestination);
+      case "to_destination": return _button("Navigating to Destination", Colors.green, null);
+      case "arrived": return _button("Complete Ride", Colors.teal, _completeRide);
+      default: return const SizedBox();
     }
   }
 
-  // ---------------------------
-  //  UI ACTION BUTTON
-  // ---------------------------
-
-  Widget _buildActionButton() {
-    switch (_tripStage) {
-      case "idle":
-        return _button("Start Ride", Colors.blueAccent, _startRide);
-
-      case "to_pickup":
-        return _button(
-          "Heading to Destination",
-          _canProceedToDestination ? Colors.green : Colors.grey,
-          _proceedToDestination,
-        );
-
-      case "to_destination":
-        return _button(
-          "Navigating to Destination",
-          Colors.green,
-          null,
-        );
-
-      case "arrived":
-        return _button(
-          "Complete Ride",
-          Colors.teal,
-          _completeRide,
-        );
-
-      default:
-        return const SizedBox();
-    }
+  // ⭐ NEW: Loading Button Widget
+  Widget _loadingButton(String text) {
+    return ElevatedButton(
+      onPressed: null, // Disable button while loading
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blueGrey, // Use a neutral color for loading
+        minimumSize: const Size(double.infinity, 55),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              color: Colors.green,
+              strokeWidth: 5,
+            ),
+          ),
+          const SizedBox(width: 15),
+          Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.green)),
+        ],
+      ),
+    );
   }
 
   Widget _button(String text, Color color, VoidCallback? onPressed) {
@@ -770,72 +754,38 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       style: ElevatedButton.styleFrom(
         backgroundColor: color,
         minimumSize: const Size(double.infinity, 55),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.w700,
-          color: Colors.white,
-        ),
-      ),
+      child: Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: Colors.white)),
     );
   }
 
-  // ---------------------------
-  // NIGHT MODE TOGGLE
-  // ---------------------------
-
   Future<void> _applyMapStyle() async {
     final controller = await _controller.future;
-
-    if (_forceNightMode) {
-      controller.setMapStyle(nightMapJson);
-    } else {
-      controller.setMapStyle(null); // Day mode
-    }
-  }
-
-  bool get isNightTime {
-    final hour = DateTime.now().hour;
-    return hour < 6 || hour > 18;
+    if (_forceNightMode) controller.setMapStyle(nightMapJson);
+    else controller.setMapStyle(null);
   }
 
   // ---------------------------
-  // BUILD USER INTERFACE
+  // BUILD UI
   // ---------------------------
 
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: CircularProgressIndicator(color: Colors.white),
-        ),
-      );
+          backgroundColor: Colors.black,
+          body: Center(child: CircularProgressIndicator(color: Colors.white)));
     }
-
-    final pickup = requestData?['pickupAddress'] ?? "N/A";
-    final dest = requestData?['destinationAddress'] ?? "N/A";
-    final user = requestData?['userName'] ?? "Customer";
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.green,
-        title: const Text(
-          "Ride Navigation",
-          style: TextStyle(color: Colors.white),
-        ),
+        backgroundColor: primaryColor,
+        title: const Text("Ride Navigation", style: TextStyle(color: Colors.white)),
         actions: [
           IconButton(
-            icon: Icon(
-              _forceNightMode ? Icons.dark_mode : Icons.light_mode,
-              color: Colors.white,
-            ),
+            icon: Icon(_forceNightMode ? Icons.dark_mode : Icons.light_mode,
+                color: Colors.white),
             onPressed: () {
               setState(() => _forceNightMode = !_forceNightMode);
               _applyMapStyle();
@@ -845,144 +795,49 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
       ),
       body: Stack(
         children: [
-          GoogleMap(
-            initialCameraPosition: CameraPosition(
-              target: LatLng(
-                requestData!['pickupLat'],
-                requestData!['pickupLng'],
-              ),
-              zoom: 15,
-            ),
-            onMapCreated: (controller) {
-              _controller.complete(controller);
-              _applyMapStyle();
+          // FIX: Use Listener to detect user touch
+          Listener(
+            onPointerDown: (_) {
+              setState(() {
+                _autoCameraEnabled = false;
+              });
             },
-            myLocationEnabled: true,
-            zoomControlsEnabled: false,
-            markers: _markers,
-            polylines: _polylines,
-          ),
-
-          // ---------------------------
-          // TOP NAVIGATION BANNER
-          // ---------------------------
-
-          Positioned(
-            top: 15,
-            left: 15,
-            right: 15,
-            child: Column(
-              children: [
-                // TURN ARROW
-                if (_navSteps.isNotEmpty &&
-                    _currentStepIndex < _navSteps.length)
-                  _bigTurnArrow(_navSteps[_currentStepIndex]['maneuver']),
-
-                const SizedBox(height: 8),
-
-                // NAVIGATION INSTRUCTION
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        offset: Offset(0, 2),
-                        blurRadius: 6,
-                      ),
-                    ],
-                  ),
-                  child: Text(
-                    _currentInstruction,
-                    style: const TextStyle(
-                      color: Colors.black87,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 18,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                // LANE GUIDANCE
-                if (_navSteps.isNotEmpty &&
-                    _currentStepIndex < _navSteps.length)
-                  _laneGuidanceWidget(
-                    _navSteps[_currentStepIndex],
-                  ),
-              ],
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: LatLng(requestData!['pickupLat'], requestData!['pickupLng']),
+                zoom: 15,
+              ),
+              onMapCreated: (controller) {
+                _controller.complete(controller);
+                _applyMapStyle();
+              },
+              myLocationEnabled: false,
+              zoomControlsEnabled: false,
+              markers: _markers,
+              polylines: _polylines,
             ),
           ),
 
-          // ---------------------------
-          // BOTTOM INFORMATION CARD
-          // ---------------------------
-         /*
-          Positioned(
-            bottom: 150,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.95),
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: const [
-                  BoxShadow(
-                    blurRadius: 8,
-                    offset: Offset(0, -2),
-                    color: Colors.black26,
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    "Customer: $user",
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text("Pickup: $pickup", style: TextStyle(
-                    color: Colors.black
-                  ),),
-                  Text("Destination: $dest", style: TextStyle(
-                    color: Colors.black
-                    ),),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      Text("ETA: $_etaText",
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, color: Colors.black)),
-                      Text("Distance: $_distanceText",
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, color: Colors.black),),
-                    ],
-                  ),
-                ],
+          // RE-CENTER BUTTON (Only shows if you moved the map)
+          if (!_autoCameraEnabled &&
+              _tripStage != "idle" &&
+              _tripStage != "arrived")
+            Positioned(
+              bottom: 130, // Above the bottom button
+              right: 20,
+              child: FloatingActionButton.extended(
+                onPressed: _recenterCamera,
+                backgroundColor: Colors.white,
+                icon: const Icon(Icons.navigation, color: Colors.blue),
+                label: const Text("Re-center",
+                    style: TextStyle(
+                        color: Colors.blue, fontWeight: FontWeight.bold)),
               ),
             ),
-          ),
-           */
-          // ---------------------------
-          // BOTTOM ACTION BUTTON
-          // ---------------------------
 
+          // Bottom Action Button
           Positioned(
-            bottom: 65,
-            left: 12,
-            right: 12,
-            child: _buildActionButton(),
-          ),
+              bottom: 65, left: 12, right: 12, child: _buildActionButton()),
         ],
       ),
     );

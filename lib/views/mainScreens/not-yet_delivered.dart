@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:ubwinza_riders/global/global_vars.dart';
 import 'package:ubwinza_riders/views/mainScreens/parcel_in_progress.dart';
 
 class NotYetDelivered extends StatefulWidget {
@@ -18,7 +19,7 @@ class _NotYetDeliveredState extends State<NotYetDelivered> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Parcels In Progress"),
-        backgroundColor: Colors.green,
+        backgroundColor: primaryColor,
       ),
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
@@ -60,6 +61,7 @@ class _NotYetDeliveredState extends State<NotYetDelivered> {
               final userImage = data['userImage'];
 
               return Card(
+                color: primaryColor,
                 margin: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 8),
                 elevation: 3,
@@ -92,7 +94,7 @@ class _NotYetDeliveredState extends State<NotYetDelivered> {
                     ],
                   ),
                   trailing: const Icon(Icons.chevron_right_rounded,
-                      size: 28, color: Colors.black54),
+                      size: 28, color: Colors.white),
                   onTap: () {
                     Navigator.push(
                       context,
