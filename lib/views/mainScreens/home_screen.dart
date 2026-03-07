@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:ubwinza_riders/global/global_instances.dart';
 import 'package:ubwinza_riders/global/global_vars.dart';
 import 'package:ubwinza_riders/views/mainScreens/history.dart';
-import 'package:ubwinza_riders/views/mainScreens/new_available_order.dart';
+import 'package:ubwinza_riders/views/mainScreens/new_available_orders.dart';
+import 'package:ubwinza_riders/views/mainScreens/new_available_requests.dart';
 import 'package:ubwinza_riders/views/mainScreens/not-yet_delivered.dart';
 import 'package:ubwinza_riders/views/mainScreens/profile_screen.dart';
 import 'package:ubwinza_riders/views/mainScreens/total_earnings.dart';
@@ -45,8 +46,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isBlocked || !_isLoggedIn) return;
 
     if (index == 0) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => const NewAvailableOrderScreen()));
-    } else if (index == 2) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => const NewAvailableRequestsScreen()));
+
+    } else if (index == 1) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => const NewAvailableOrdersScreen()));
+    }
+    else if (index == 2) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => const NotYetDelivered()));
     } else if (index == 3) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen()));
@@ -200,7 +205,8 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: EdgeInsets.zero,
             children: <Widget>[
               _buildDrawerHeader(),
-              _drawerItem("New Available Orders", Icons.assessment, 0),
+              _drawerItem("New Available Requests", Icons.assessment, 0),
+              _drawerItem("New Available Orders", Icons.assessment, 1),
               _drawerItem("Not yet Delivered", Icons.location_history, 2),
               const Divider(color: Colors.white30),
               _drawerItem("History", Icons.done_all, 3),

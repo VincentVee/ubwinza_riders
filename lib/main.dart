@@ -5,6 +5,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ubwinza_riders/features/services/app_service_life_cycle.dart';
+import 'package:ubwinza_riders/features/services/driver_location_updator.dart';
 import 'package:ubwinza_riders/view_models/auth_view_model.dart';
 import 'package:ubwinza_riders/views/splashScreen/splash_screen.dart';
 
@@ -12,6 +13,7 @@ import 'global/global_vars.dart';
 
 // Add this global variable
 AppLifecycleService? appLifecycleService;
+final DriverLocationUpdater _updater = DriverLocationUpdater();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,11 +56,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     
     // Set user online when app starts
     _setInitialOnlineStatus();
+    _updater.startLocationUpdates();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _updater.stopLocationUpdates();
     super.dispose();
   }
 

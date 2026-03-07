@@ -3,15 +3,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:ubwinza_riders/views/mainScreens/parcel_in_progress.dart';
 
-class NewAvailableOrderScreen extends StatefulWidget {
-  const NewAvailableOrderScreen({super.key});
+class NewAvailableRequestsScreen extends StatefulWidget {
+  const NewAvailableRequestsScreen({super.key});
 
   @override
-  State<NewAvailableOrderScreen> createState() =>
-      _NewAvailableOrderScreenState();
+  State<NewAvailableRequestsScreen> createState() =>
+      _NewAvailableRequestsScreenState();
 }
 
-class _NewAvailableOrderScreenState extends State<NewAvailableOrderScreen> {
+class _NewAvailableRequestsScreenState extends State<NewAvailableRequestsScreen> {
   final _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
