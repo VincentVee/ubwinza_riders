@@ -76,7 +76,7 @@ flutter_launcher_icons:
   ios: true
   # ✅ CORRECTED PATH: Use the path relative to the project root.
   # Assuming the file is directly inside the 'images' folder.
-  image_path: "images/ubwinza-icon.jpeg"
+  image_path: "images/ubwinza_logo.png"
 
 flutter_native_splash:
   color: "#1A2B7B"
