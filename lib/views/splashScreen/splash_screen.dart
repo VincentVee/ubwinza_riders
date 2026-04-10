@@ -1,13 +1,10 @@
-
 import 'dart:async';
-
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../authScreens/auth_screen.dart';
 import '../mainScreens/home_screen.dart';
 
-    
 class MySplashScreen extends StatefulWidget {
   const MySplashScreen({super.key});
 
@@ -15,58 +12,100 @@ class MySplashScreen extends StatefulWidget {
   State<MySplashScreen> createState() => _MySplashScreenState();
 }
 
-class _MySplashScreenState extends State<MySplashScreen> {
+class _MySplashScreenState extends State<MySplashScreen>
+    with SingleTickerProviderStateMixin {
 
-  iniTimer() {
-    
-    Timer(const Duration(seconds: 3), () async => {
+  late AnimationController _controller;
+  late Animation<double> _fade;
+  late Animation<double> _scale;
 
-      if(FirebaseAuth.instance.currentUser == null) {
-        Navigator.push(context, MaterialPageRoute(builder: (c) => AuthScreen()))
+  @override
+  void initState() {
+    super.initState();
 
+    // Animation setup
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    );
+
+    _fade = Tween<double>(begin: 0, end: 1).animate(_controller);
+    _scale = Tween<double>(begin: 0.8, end: 1.0).animate(_controller);
+
+    _controller.forward();
+
+    _initTimer();
+  }
+
+  _initTimer() {
+    Timer(const Duration(seconds: 3), () {
+      if (FirebaseAuth.instance.currentUser == null) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (c) => AuthScreen()),
+        );
       } else {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const HomeScreen()),
-        )
+        );
       }
     });
   }
 
   @override
-  void initState() {
-    // TODO: implement initState
-    super.initState();
-
-    iniTimer();
-
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFF1A2B7B), // 🔥 your brand color
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(10.0),
-              child: Image.asset(
-                "images/ubwinza-icon.jpeg"
-              ),
+        child: FadeTransition(
+          opacity: _fade,
+          child: ScaleTransition(
+            scale: _scale,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+
+                // 🔥 LOGO
+                Image.asset(
+                  "images/ubwinza_logo.png",
+                  width: 120,
+                ),
+
+                const SizedBox(height: 20),
+
+                // 🔥 APP NAME
+                const Text(
+                  "Ubwinza Riders",
+                  style: TextStyle(
+                    fontSize: 24,
+                    color: Colors.white,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+
+                // 🔥 TAGLINE (optional but clean)
+                const Text(
+                  "Fast • Reliable • Smart",
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.white70,
+                  ),
+                ),
+              ],
             ),
-            const Text(
-              "Riders App",
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                letterSpacing: 3,
-                fontSize: 26,
-                color: Colors.grey
-              ),
-            )
-          ],
+          ),
         ),
       ),
     );
   }
 }
-    

@@ -1,23 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-// ⭐ ADDED IMPORT
-import 'package:geocoding/geocoding.dart';
-import 'package:ubwinza_riders/views/mainScreens/order_in_progress.dart'; 
 
-// FIX: Change to the correct class name from previous code review
-import 'package:ubwinza_riders/views/mainScreens/parcel_in_progress.dart'; // <-- KEEPING OLD PATH FOR COMPATIBILITY
-// Using the correct class name for navigation
-
-// --- Global Theme Colors (for consistency) ---
-const Color primaryColor = Color(0xFF1A2B7B);
-const Color successColor = Colors.green;
-const Color warningColor = Colors.orangeAccent;
-
-// =================================================================
-// NewAvailableOrdersScreen (No Change Required)
-// =================================================================
+import '../../global/global_vars.dart';
+import 'order_in_progress.dart';
 
 class NewAvailableOrdersScreen extends StatefulWidget {
   const NewAvailableOrdersScreen({super.key});
@@ -28,18 +14,22 @@ class NewAvailableOrdersScreen extends StatefulWidget {
 }
 
 class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
-  final _auth = FirebaseAuth.instance;
+
+  final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  String? amountError;
+  static const double minimumWalletBalance = 50.0;
 
   @override
   Widget build(BuildContext context) {
+
     final String? driverId = _auth.currentUser?.uid;
 
     if (driverId == null) {
       return const Scaffold(
         body: Center(
           child: Text(
-            'No rider logged in.',
+            "No rider logged in",
             style: TextStyle(fontSize: 18, color: Colors.red),
           ),
         ),
@@ -50,136 +40,253 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
       backgroundColor: Colors.grey[100],
       appBar: AppBar(
         title: const Text(
-          'Orders Ready for Pickup',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+          "Orders Ready for Pickup",
+          style: TextStyle(color: Colors.white),
         ),
-        centerTitle: true,
         backgroundColor: primaryColor,
+        centerTitle: true,
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore
-            .collection('orders')
-            .where('status', isEqualTo: 'prepared')
-            .orderBy('createdAt', descending: true)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+
+      /// STREAM WALLET BALANCE LIVE
+      body: StreamBuilder<DocumentSnapshot>(
+        stream: _firestore.collection("riders").doc(driverId).snapshots(),
+        builder: (context, walletSnapshot) {
+
+          if (walletSnapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          if (snapshot.hasError) {
-            return Center(
-              child: Text(
-                'Error loading orders: ${snapshot.error}',
-                style: const TextStyle(color: Colors.red),
-              ),
+          if (!walletSnapshot.hasData || !walletSnapshot.data!.exists) {
+            return const Center(
+              child: Text("Rider profile not found"),
             );
           }
 
-          final docs = snapshot.data?.docs ?? [];
-          if (docs.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.assignment_ind_outlined, size: 60, color: Colors.grey.shade400),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'No orders ready for pickup.',
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
+          final riderData =
+          walletSnapshot.data!.data() as Map<String, dynamic>;
+
+          final double walletBalance =
+          (riderData["balance"] ?? 0).toDouble();
+
+          /// 🚫 BLOCK RIDER IF BALANCE LOW
+          if (walletBalance < minimumWalletBalance) {
+            return _buildInsufficientBalance(walletBalance);
           }
 
-          return ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: docs.length,
-            itemBuilder: (context, index) {
-              final data = docs[index].data() as Map<String, dynamic>;
-              final requestId = docs[index].id;
-
-              return PickupRequestCard(
-                data: data,
-                requestId: requestId,
-                driverId: driverId,
-                onAccept: _confirmAccept,
-                onReject: _confirmReject,
-              );
-            },
-          );
+          /// ✅ SHOW ORDERS IF BALANCE OK
+          return _buildOrdersList(driverId);
         },
       ),
     );
   }
 
-  // --- Core Action Logic (FIX APPLIED HERE) ---
+  /// ORDERS STREAM
+  Widget _buildOrdersList(String driverId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _firestore
+          .collection("orders")
+          .where("status", isEqualTo: "prepared")
+          .orderBy("createdAt", descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
 
-  void _confirmAccept(BuildContext context, String requestId, String driverId, Map<String, dynamic> requestData) {
-      // ... (logic remains the same)
-      showDialog(
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (snapshot.hasError) {
+          return Center(
+            child: Text(
+              "Error loading orders: ${snapshot.error}",
+              style: const TextStyle(color: Colors.red),
+            ),
+          );
+        }
+
+        final docs = snapshot.data?.docs ?? [];
+
+        if (docs.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.assignment_ind_outlined,
+                  size: 60,
+                  color: Colors.grey.shade400,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  "No orders ready for pickup",
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(12),
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+
+            final data = docs[index].data() as Map<String, dynamic>;
+            final requestId = docs[index].id;
+
+            return PickupRequestCard(
+              data: data,
+              requestId: requestId,
+              driverId: driverId,
+              onAccept: _confirmAccept,
+              onReject: _confirmReject,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 🚫 LOW BALANCE UI
+  Widget _buildInsufficientBalance(double balance) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(25),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+
+            const Icon(
+              Icons.account_balance_wallet,
+              size: 80,
+              color: Colors.orange,
+            ),
+
+            const SizedBox(height: 20),
+
+            const Text(
+              "Insufficient Wallet Balance",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.red,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            const Text(
+              "You need to top up your wallet to accept new rides.",
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.black
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            Text(
+              "Current Balance: ZMW ${balance.toStringAsFixed(2)}",
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+                color: Colors.black
+              ),
+            ),
+
+            const SizedBox(height: 30),
+
+            ElevatedButton.icon(
+              icon: const Icon(Icons.add),
+              label: const Text("Add Amount"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primaryColor,
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 30, vertical: 12),
+              ),
+              onPressed: () {
+
+                /// Navigate to wallet screen
+               // Navigator.pushNamed(context, "/walletTopup");
+                  _showTopUpDialog(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// ACCEPT ORDER
+  void _confirmAccept(BuildContext context, String requestId, String driverId,
+      Map<String, dynamic> requestData) {
+
+    showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: primaryColor,
-        title: const Text('Accept Pickup'),
-        content: const Text(
-          'Confirm acceptance for pickup and delivery?',
-          style: TextStyle(color: Colors.white70),
-        ),
+        title: const Text("Accept Pickup"),
+        content: const Text("Confirm acceptance for pickup and delivery?"),
         actions: [
+
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white)),
+            child: const Text("Cancel"),
           ),
+
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
               await _acceptRequest(requestId, driverId, requestData);
             },
-            child: const Text('Accept', style: TextStyle(color: successColor, fontWeight: FontWeight.bold)),
+            child: const Text(
+              "Accept",
+              style: TextStyle(color: Colors.green),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _acceptRequest(String requestId, String driverId, Map<String, dynamic> requestData) async {
-    // ... (logic remains the same)
+  Future<void> _acceptRequest(
+      String requestId,
+      String driverId,
+      Map<String, dynamic> requestData) async {
+
     try {
-      final riderDoc = await _firestore.collection('riders').doc(driverId).get();
+
+      final riderDoc =
+      await _firestore.collection("riders").doc(driverId).get();
+
       final riderData = riderDoc.data();
-      
-      await _firestore.collection('orders').doc(requestId).update({
-        // FIX: Change status to 'accepted' so it is removed from the 'prepared' list
-        'status': 'accepted', 
-        'driverId': driverId,
-        'driverName': riderData?['name'] ?? 'Unknown Rider',
-        'driverPhone': riderData?['phone'] ?? '',
-        'driverImage': riderData?['imageUrl'] ?? '',
-        'acceptedAt': FieldValue.serverTimestamp(),
-        'vehicleType': riderData?['vehicleType'] ?? '',
-        'vehicleModel': riderData?['vehicleModel'] ?? '',
-        'licensePlate': riderData?['licensePlate'] ?? '',
+
+      await _firestore.collection("orders").doc(requestId).update({
+
+        "status": "accepted",
+        "driverId": driverId,
+        "driverName": riderData?["name"] ?? "Unknown Rider",
+        "driverPhone": riderData?["phone"] ?? "",
+        "driverImage": riderData?["imageUrl"] ?? "",
+        "acceptedAt": FieldValue.serverTimestamp(),
       });
 
       if (context.mounted) {
-        // FIX: Change to the correct class name for the navigation screen
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (_) => OrdersInProgress( // Renamed class here
+            builder: (_) => OrdersInProgress(
               requestId: requestId,
-              initialStatus: 'accepted',
+              initialStatus: "accepted",
             ),
           ),
         );
       }
+
     } catch (e) {
+
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to accept pickup: $e'),
+            content: Text("Failed to accept pickup: $e"),
             backgroundColor: Colors.red,
           ),
         );
@@ -187,69 +294,340 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
     }
   }
 
+  /// REJECT ORDER
   void _confirmReject(BuildContext context, String requestId) {
-    // ... (logic remains the same)
+
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: primaryColor,
-        title: const Text('Reject Pickup'),
+        title: const Text("Reject Pickup"),
         content: const Text(
-          'Are you sure you want to reject this assigned pickup order?',
-          style: TextStyle(color: Colors.white70),
-        ),
+            "Are you sure you want to reject this pickup order?"),
         actions: [
+
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white)),
+            child: const Text("Cancel"),
           ),
+
           TextButton(
             onPressed: () async {
+
               Navigator.pop(context);
-              await _rejectRequest(requestId);
+
+              await _firestore
+                  .collection("orders")
+                  .doc(requestId)
+                  .update({
+                "status": "prepared",
+                "driverId": FieldValue.delete(),
+              });
+
             },
-            child: const Text('Reject', style: TextStyle(color: warningColor, fontWeight: FontWeight.bold)),
+            child: const Text(
+              "Reject",
+              style: TextStyle(color: Colors.red),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _rejectRequest(String requestId) async {
-    // ... (logic remains the same)
-    try {
-      await _firestore.collection('orders').doc(requestId).update({
-        'status': 'prepared', 
-        'driverId': FieldValue.delete(),
-        'driverName': FieldValue.delete(),
-      });
-      
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Order rejected. Reverted to pending status.'),
-            backgroundColor: warningColor,
-          ),
+  void _showTopUpDialog(BuildContext context) {
+
+    final amountController = TextEditingController();
+    String selectedNetwork = "MTN";
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+
+      ),
+      builder: (context) {
+
+        return StatefulBuilder(
+          builder: (context, setState) {
+
+            void setQuickAmount(int amount) {
+              amountController.text = amount.toString();
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+                left: 20,
+                right: 20,
+                top: 20,
+              ),
+
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+
+                children: [
+
+                  const Center(
+                    child: Text(
+                      "Top Up Wallet",
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  /// NETWORK SELECT
+                  const Text(
+                    "Select Network",
+                    style: TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+
+                      _networkButton("MTN", selectedNetwork, (v){
+                        setState(()=> selectedNetwork = v);
+                      }),
+
+                      _networkButton("Airtel", selectedNetwork, (v){
+                        setState(()=> selectedNetwork = v);
+                      }),
+
+                      _networkButton("Zamtel", selectedNetwork, (v){
+                        setState(()=> selectedNetwork = v);
+                      }),
+
+                    ],
+                  ),
+
+                  const SizedBox(height: 25),
+
+                  /// QUICK AMOUNTS
+                  const Text(
+                    "Quick Amount",
+                    style: TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+
+                      _quickAmountButton(50, setQuickAmount),
+                      _quickAmountButton(100, setQuickAmount),
+                      _quickAmountButton(150, setQuickAmount),
+                      _quickAmountButton(200, setQuickAmount),
+
+                    ],
+                  ),
+
+                  const SizedBox(height: 25),
+
+                  /// MANUAL AMOUNT
+                  if (amountError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        amountError!,
+                        style: const TextStyle(
+                          color: Colors.red,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+
+                  TextField(
+                    controller: amountController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: "Enter Amount (ZMW)",
+                      border: OutlineInputBorder(),
+                    ),
+                    style: TextStyle(color: Colors.black),
+                  ),
+                  const SizedBox(height: 20),
+
+                  /// PAY BUTTON
+                  SafeArea(
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryColor,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+
+                        child: const Text(
+                          "Proceed to Payment",
+                          style: TextStyle(fontSize: 16),
+                        ),
+
+                        onPressed: () {
+
+                          final amount = double.tryParse(amountController.text) ?? 0;
+
+                          if (amount < 50) {
+                            setState(() {
+                              amountError = "Please enter an amount of K50 and above.";
+                            });
+                            return;
+                          }
+
+                          setState(() {
+                            amountError = null;
+                          });
+
+                          Navigator.pop(context);
+
+                          _initiateTopUp(selectedNetwork, amount);
+                        },
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+                ],
+              ),
+            );
+          },
         );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to reject: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
+      },
+    );
   }
+
+  Widget _networkButton(
+      String network,
+      String selected,
+      Function(String) onTap,
+      ) {
+    final bool active = network == selected;
+
+    Color networkColor;
+
+    switch (network) {
+      case "MTN":
+        networkColor = const Color(0xFFFFCC00); // MTN Yellow
+        break;
+
+      case "Airtel":
+        networkColor = const Color(0xFFE60000); // Airtel Red
+        break;
+
+      case "Zamtel":
+        networkColor = const Color(0xFF008000); // Zamtel Green
+        break;
+
+      default:
+        networkColor = Colors.grey;
+    }
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => onTap(network),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+
+          decoration: BoxDecoration(
+            color: networkColor,
+            borderRadius: BorderRadius.circular(12),
+
+            /// Highlight if selected
+            border: Border.all(
+              color: active ? Colors.black : Colors.transparent,
+              width: active ? 3 : 0,
+            ),
+
+            boxShadow: active
+                ? [
+              BoxShadow(
+                color: networkColor.withOpacity(0.6),
+                blurRadius: 10,
+                spreadRadius: 1,
+              )
+            ]
+                : [],
+          ),
+
+          child: Center(
+            child: Text(
+              network,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 15,
+
+                /// MTN text must be black
+                color: network == "MTN" ? Colors.black : Colors.white,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  Widget _quickAmountButton(
+      int amount,
+      Function(int) onTap,
+      ) {
+    return GestureDetector(
+
+      onTap: ()=> onTap(amount),
+
+      child: Container(
+        width: 70,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: Colors.grey.shade200,
+        ),
+
+        child: Center(
+          child: Text(
+            "ZMW $amount",
+            style: const TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _initiateTopUp(String network, double amount) {
+
+    print("Network: $network");
+    print("Amount: $amount");
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          "Processing $network payment of ZMW ${amount.toStringAsFixed(2)}",
+        ),
+      ),
+    );
+
+    /// Here you call
+    /// MTN MoMo API
+    /// Airtel Money API
+    /// Zamtel API
+  }
+
+
 }
 
-// =================================================================
-// PickupRequestCard (CONVERTED TO STATEFUL)
-// =================================================================
 
-class PickupRequestCard extends StatefulWidget {
+class PickupRequestCard extends StatelessWidget {
   final Map<String, dynamic> data;
   final String requestId;
   final String driverId;
@@ -266,261 +644,79 @@ class PickupRequestCard extends StatefulWidget {
   });
 
   @override
-  State<PickupRequestCard> createState() => _PickupRequestCardState();
-}
-
-class _PickupRequestCardState extends State<PickupRequestCard> {
-  // ⭐ STATE VARIABLES TO HOLD THE ADDRESSES
-  // We MUST keep the final variable names from the original request
-  // as the display variables in the build method.
-  String pickupAddress = 'Loading pickup address...';
-  String destinationAddress = 'Loading dropoff address...';
-  
-  // --- Utility Functions ---
-
-  String _formatTimestamp(Timestamp? timestamp) {
-    if (timestamp == null) return 'N/A';
-    final date = timestamp.toDate();
-    return DateFormat('h:mm a (MMM d)').format(date);
-  }
-  
-  String _formatZMW(double? amount) {
-    return 'ZMW ${amount?.toStringAsFixed(2) ?? '0.00'}';
-  }
-
-  // ⭐ CORE REVERSE GEOCODING FUNCTION
-  Future<String> _reverseGeocode(double? lat, double? lng) async {
-    if (lat == null || lng == null) {
-      return 'Address N/A (Missing Coords)';
-    }
-    
-    // Fallback to coordinates
-    String coords = '(${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})';
-
-    try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(lat, lng);
-      
-      if (placemarks.isNotEmpty) {
-        final place = placemarks.first;
-        // Construct a readable address string
-        String address = [
-          place.street,
-          place.subLocality,
-          place.locality,
-          place.country,
-        ].where((e) => e != null && e.isNotEmpty).join(', ');
-        
-        // Return the readable address or fallback to coordinates
-        return address.isNotEmpty ? address : coords;
-      }
-      return coords;
-    } catch (e) {
-      // Return coordinates on geocoding failure
-      return 'Lookup Failed: $coords';
-    }
-  }
-
-  // --- Initialization and Geocoding Call ---
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAddresses();
-  }
-
-  void _loadAddresses() async {
-    final data = widget.data;
-
-    // 1. Pickup Coordinates (Extracting from data['seller'] and data['pickupAddress'] fallbacks)
-    final pickupLat = data['seller']?['lat'] as double? ?? data['pickupLat'] as double?;
-    final pickupLng = data['seller']?['lng'] as double? ?? data['pickupLng'] as double?;
-    
-    // 2. Dropoff Coordinates
-    final dropoffLat = data['dropoff']?['lat'] as double? ?? data['destinationLat'] as double?;
-    final dropoffLng = data['dropoff']?['lng'] as double? ?? data['destinationLng'] as double?;
-
-    // Perform lookups
-    final newPickupAddress = await _reverseGeocode(pickupLat, pickupLng);
-    final newDestinationAddress = await _reverseGeocode(dropoffLat, dropoffLng);
-
-    // Update the state (and the variables named as requested)
-    if (mounted) {
-      setState(() {
-        pickupAddress = newPickupAddress;
-        destinationAddress = newDestinationAddress;
-      });
-    }
-  }
-
-
-  @override
   Widget build(BuildContext context) {
-    // ⭐ VARIABLE ASSIGNMENT (Using the state variables)
-    // The names here MUST match the requested final variable names.
-    // They are no longer local `final` variables, but are state properties.
-    final estimatedFare = widget.data['total'] as double? ?? widget.data['estimatedFare'] as double?;
-    final deliveryFee = widget.data['deliveryFee'] as double? ?? 0.0;
-    final rideType = widget.data['rideType'] as String? ?? 'N/A';
-    final createdAt = widget.data['createdAt'] as Timestamp?;
+
+    final deliveryFee = (data["deliveryFee"] ?? 0).toDouble();
+    final rideType = data["rideType"] ?? "Delivery";
 
     return Card(
-      color: primaryColor,
       margin: const EdgeInsets.symmetric(vertical: 8),
-      elevation: 5,
+      elevation: 4,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header Info
+
+            /// Ride Type
+            Text(
+              rideType.toUpperCase(),
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            /// Delivery Fee
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                const Text("Delivery Fee"),
                 Text(
-                  rideType.toUpperCase(),
+                  "ZMW ${deliveryFee.toStringAsFixed(2)}",
                   style: const TextStyle(
-                    color: Colors.white,
                     fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                  ),
-                ),
-                Text(
-                  _formatTimestamp(createdAt),
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 12,
+                    color: Colors.green,
                   ),
                 ),
               ],
             ),
-            const Divider(color: Colors.white30, height: 15),
 
-            // Pickup/Destination (Uses the state properties: pickupAddress, destinationAddress)
-            _buildAddressRow(
-              icon: Icons.store,
-              label: 'Pickup',
-              address: pickupAddress, // ⭐ Uses Geocoded address
-              color: successColor,
-            ),
-            _buildAddressRow(
-              icon: Icons.location_on,
-              label: 'Dropoff',
-              address: destinationAddress, // ⭐ Uses Geocoded address
-              color: warningColor,
-            ),
-            
-            const SizedBox(height: 10),
-
-            // Fare Details
-            _buildFareDetail(
-              label: 'Total Payout (Delivery Fee)',
-              value: _formatZMW(deliveryFee),
-              color: successColor,
-              isBold: true,
-            ),
-            _buildFareDetail(
-              label: 'Total Customer Charge',
-              value: _formatZMW(estimatedFare),
-              color: Colors.white70,
-              isBold: false,
-            ),
-            
             const SizedBox(height: 15),
 
-            // Action Buttons
+            /// Buttons
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
+
                 ElevatedButton.icon(
-                  icon: const Icon(Icons.check_circle_outline),
-                  label: const Text('Accept Pickup'),
+                  icon: const Icon(Icons.check),
+                  label: const Text("Accept"),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: successColor,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    backgroundColor: Colors.green,
                   ),
-                  onPressed: () => widget.onAccept(context, widget.requestId, widget.driverId, widget.data),
+                  onPressed: () =>
+                      onAccept(context, requestId, driverId, data),
                 ),
+
                 ElevatedButton.icon(
-                  icon: const Icon(Icons.cancel_outlined),
-                  label: const Text('Reject'),
+                  icon: const Icon(Icons.close),
+                  label: const Text("Reject"),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: warningColor,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    backgroundColor: Colors.red,
                   ),
-                  onPressed: () => widget.onReject(context, widget.requestId),
+                  onPressed: () =>
+                      onReject(context, requestId),
                 ),
               ],
-            ),
+            )
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildAddressRow({required IconData icon, required String label, required String address, required Color color}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$label:',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  address,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 13,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFareDetail({required String label, required String value, required Color color, required bool isBold}) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 5.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: color,
-              fontSize: isBold ? 15 : 14,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-          Text(
-            value,
-            style: TextStyle(
-              color: color,
-              fontSize: isBold ? 16 : 14,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -625,14 +625,71 @@ class _ParcelInProgressScreenState extends State<ParcelInProgressScreen> {
   }
 
   Future<void> _completeRide() async {
-    await _tts.speak("Ride completed.");
-    await _firestore.collection('requests').doc(widget.requestId).update({
-      'status': 'completed',
-      'completedAt': DateTime.now(),
-      'driverLat': null, // Clear driver location on completion
-      'driverLng': null,
-    });
-    Navigator.pop(context);
+    try {
+      await _tts.speak("Ride completed.");
+
+      final requestRef =
+      _firestore.collection('requests').doc(widget.requestId);
+
+      final requestSnap = await requestRef.get();
+
+      final data = requestSnap.data() as Map<String, dynamic>;
+
+      final double deliveryFee =
+      (data["deliveryFee"] ?? 0).toDouble();
+
+      /// 5% PLATFORM COMMISSION
+      final double commission = deliveryFee * 0.05;
+
+      /// DRIVER EARNING AFTER COMMISSION
+      final double driverEarning = deliveryFee - commission;
+
+      final String driverId = data["driverId"];
+
+      final riderRef = _firestore.collection("riders").doc(driverId);
+
+      await _firestore.runTransaction((transaction) async {
+        final riderSnap = await transaction.get(riderRef);
+
+        final riderData = riderSnap.data() as Map<String, dynamic>;
+
+        double balance =
+        (riderData["balance"] ?? 0).toDouble();
+
+        double earnings =
+        (riderData["earnings"] ?? 0).toDouble();
+
+        /// Deduct commission from rider balance
+        balance -= commission;
+
+        /// Add earning to rider earnings
+        earnings += driverEarning;
+
+        transaction.update(riderRef, {
+          "balance": balance,
+          "earnings": earnings,
+        });
+
+        /// Update ride
+        transaction.update(requestRef, {
+          "status": "completed",
+          "completedAt": FieldValue.serverTimestamp(),
+          "commission": commission,
+          "earnings": driverEarning,
+          "driverLat": null,
+          "driverLng": null,
+        });
+      });
+
+      Navigator.pop(context);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Failed to complete ride: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Widget _laneGuidanceWidget(Map<String, dynamic> step) {

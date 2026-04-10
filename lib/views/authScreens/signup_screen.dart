@@ -28,6 +28,10 @@ class _SignupScreenState extends State<SignupScreen> {
   TextEditingController();
   TextEditingController licensePlateTextEditingController =
   TextEditingController();
+  TextEditingController balanceTextEditingController =
+  TextEditingController();
+  TextEditingController commissionTextEditingController =
+  TextEditingController();
   TextEditingController locationTextEditingController = TextEditingController();
 
   /// Null at start so user explicitly chooses a type
@@ -205,6 +209,8 @@ class _SignupScreenState extends State<SignupScreen> {
                         vehicleColorTextEditingController.text.trim(),
                         licensePlateTextEditingController.text.trim(),
                         locationTextEditingController.text.trim(),
+                        (balanceTextEditingController.text.trim()?? 0) as double?,
+                        (commissionTextEditingController.text.trim()?? 0) as double?,
                         context,
                       );
 

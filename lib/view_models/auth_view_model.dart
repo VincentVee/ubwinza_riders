@@ -25,6 +25,8 @@ class RiderUser {
   final String? vehicleType;
   final double? rating;
   final int? totalRides;
+  final double? balance;
+  final double? commission;
 
   RiderUser({
     this.uid,
@@ -36,6 +38,8 @@ class RiderUser {
     this.vehicleType,
     this.rating,
     this.totalRides,
+    this.balance,
+    this.commission
   });
 
   // Helper method to create RiderUser from Firestore data/SharedPreferences
@@ -49,6 +53,8 @@ class RiderUser {
       phone: data["phone"],
       vehicleType: data["vehicleType"],
       rating: (data["rating"] ?? 0.0).toDouble(),
+      balance: (data["balance"] ?? 0.0).toDouble(),
+      commission: (data["commission"] ?? 0.0).toDouble(),
       totalRides: (data["totalRides"] ?? 0).toInt(),
     );
   }
@@ -77,6 +83,8 @@ class AuthViewModel with ChangeNotifier {
         phone: sharedPreferences!.getString("phone"),
         vehicleType: sharedPreferences!.getString("vehicleType"),
         rating: sharedPreferences!.getDouble("rating"),
+        balance: sharedPreferences!.getDouble("balance"),
+        commission: sharedPreferences!.getDouble("commission"),
         totalRides: sharedPreferences!.getInt("totalRides"),
       );
     }
@@ -125,6 +133,8 @@ class AuthViewModel with ChangeNotifier {
         phone: _currentUser?.phone,
         vehicleType: _currentUser?.vehicleType,
         rating: _currentUser?.rating,
+        balance: _currentUser?.balance,
+        commission: _currentUser?.commission,
         totalRides: _currentUser?.totalRides,
       );
       notifyListeners();
@@ -170,6 +180,8 @@ class AuthViewModel with ChangeNotifier {
         phone: _currentUser?.phone,
         vehicleType: _currentUser?.vehicleType,
         rating: _currentUser?.rating,
+        balance: _currentUser?.balance,
+        commission: _currentUser?.commission,
         totalRides: _currentUser?.totalRides,
       );
       notifyListeners();
@@ -200,6 +212,8 @@ class AuthViewModel with ChangeNotifier {
       String vehicleColor,
       String licensePlate,
       String locationAddress,
+      double? balance,
+      double? commission,
       BuildContext context,
       ) async {
     // ... (Existing validation logic) ...
@@ -297,6 +311,8 @@ class AuthViewModel with ChangeNotifier {
       locationAddress: locationAddress,
       latitude: lat,
       longitude: lng,
+      balance: balance,
+      commission: commission,
       context: context,
     );
 
@@ -357,6 +373,8 @@ class AuthViewModel with ChangeNotifier {
     required String locationAddress,
     double? latitude,
     double? longitude,
+    double? balance,
+    double? commission,
     required BuildContext context,
   }) async {
     // ... (Existing saveUserToFireStore logic) ...
@@ -378,6 +396,8 @@ class AuthViewModel with ChangeNotifier {
         "earnings": 0.0,
         "rating": 5.0,
         "totalRides": 0,
+        "balance":balance,
+        "commission": commission ,
         if (latitude != null) "latitude": latitude,
         if (longitude != null) "longitude": longitude,
         "createdAt": FieldValue.serverTimestamp(),
@@ -399,6 +419,8 @@ class AuthViewModel with ChangeNotifier {
       await sharedPreferences!.setString("status", _currentUser!.status!);
       await sharedPreferences!.setBool("isOnline", true);
       await sharedPreferences!.setDouble("rating", 5.0); // Default rating
+      await sharedPreferences!.setDouble("balance", balance!);
+      await sharedPreferences!.setDouble("commission", commission!);
       await sharedPreferences!.setInt("totalRides", 0);
 
       return true;
@@ -498,6 +520,10 @@ class AuthViewModel with ChangeNotifier {
               .setInt("totalRides", (data["totalRides"] ?? 0).toInt());
           await sharedPreferences!.setString("status", data["status"]);
           await sharedPreferences!.setBool("isOnline", data["isOnline"]);
+          await sharedPreferences!.setDouble("balance", data["balance"]);
+          await sharedPreferences!.setDouble("commission", data["commission"]);
+
+
 
         } else {
           commonViewModel.showSnackBar("You are blocked by admin!", context);

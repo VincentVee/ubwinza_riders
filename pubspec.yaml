@@ -1,5 +1,5 @@
 name: ubwinza_riders
-description: "A new Flutter project."
+description: "Ubwin"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -49,6 +49,7 @@ dependencies:
   intl:
   provider:
   flutter_launcher_icons:
+  flutter_native_splash: ^2.4.0
 
 
 dev_dependencies:
@@ -76,6 +77,17 @@ flutter_launcher_icons:
   # ✅ CORRECTED PATH: Use the path relative to the project root.
   # Assuming the file is directly inside the 'images' folder.
   image_path: "images/ubwinza-icon.jpeg"
+
+flutter_native_splash:
+  color: "#1A2B7B"
+  image: images/ubwinza_logo.png
+
+  android_12:
+    color: "#1A2B7B"
+    image: images/ubwinza_logo.png
+
+  ios: true
+  android: true
 flutter:
 
   # The following line ensures that the Material Icons font is
