@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:ubwinza_riders/global/global_instances.dart';
 import 'package:ubwinza_riders/global/global_vars.dart';
@@ -7,6 +9,7 @@ import 'package:ubwinza_riders/views/mainScreens/history.dart';
 import 'package:ubwinza_riders/views/mainScreens/new_available_orders.dart';
 import 'package:ubwinza_riders/views/mainScreens/new_available_requests.dart';
 import 'package:ubwinza_riders/views/mainScreens/not-yet_delivered.dart';
+import 'package:ubwinza_riders/views/mainScreens/pending_approval.dart';
 import 'package:ubwinza_riders/views/mainScreens/profile_screen.dart';
 import 'package:ubwinza_riders/views/mainScreens/total_earnings.dart';
 import 'Withdraw_screen.dart';
@@ -20,31 +23,105 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  late bool _isLoggedIn;
-  late bool _isBlocked;
+  StreamSubscription<DocumentSnapshot>? _statusSubscription;
+  bool _isLoggedIn = false;
+  bool _isBlocked = false;
+  String _riderStatus = "pending";
 
   @override
   void initState() {
     super.initState();
     _checkUserStatus();
+    _ensureWalletExists(sharedPreferences!.getString("uid") ?? "");
+    _listenToStatusChanges();
+  }
+
+  @override
+  void dispose() {
+    _statusSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _ensureWalletExists(String driverId) async {
+    if (driverId.isEmpty) return;
+
+    final walletDoc = await _firestore.collection("wallets").doc(driverId).get();
+    if (!walletDoc.exists) {
+      await _firestore.collection("wallets").doc(driverId).set({
+        'balance': 0,
+        'currency': 'ZMW',
+        'userId': driverId,
+        'isActive': true,
+        'version': 1,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      print("✅ Created wallet for user: $driverId");
+    }
   }
 
   void _checkUserStatus() {
     _isLoggedIn = FirebaseAuth.instance.currentUser != null &&
         sharedPreferences!.getString("uid") != null;
 
-    final String riderStatus = sharedPreferences!.getString("status") ?? "pending";
-    _isBlocked = _isLoggedIn && riderStatus != "approved";
+    _riderStatus = sharedPreferences!.getString("status") ?? "pending";
+    _isBlocked = _isLoggedIn && _riderStatus != "approved";
+
+    if (_isLoggedIn && _riderStatus != "approved") {
+      _redirectToPending();
+    }
   }
 
-  // Logic to fetch earnings from Firestore
+  // FIXED: Listens to the dedicated profile collection, NOT the wallet.
+  void _listenToStatusChanges() {
+    final uid = sharedPreferences!.getString("uid") ?? "";
+    if (uid.isEmpty) return;
+
+    // ⚠️ Change "users" to "riders" if that's what your user profile collection is called!
+    _statusSubscription = _firestore.collection("users").doc(uid).snapshots().listen((snapshot) {
+      if (snapshot.exists && snapshot.data() != null) {
+        final data = snapshot.data() as Map<String, dynamic>;
+
+        // Pull status from user profile document safely
+        if (data.containsKey("status")) {
+          final currentDbStatus = data["status"] ?? "pending";
+
+          if (currentDbStatus != _riderStatus) {
+            if (mounted) {
+              setState(() {
+                _riderStatus = currentDbStatus;
+                sharedPreferences!.setString("status", currentDbStatus);
+                _isBlocked = currentDbStatus != "approved";
+              });
+            }
+
+            if (_isBlocked) {
+              _redirectToPending();
+            }
+          }
+        }
+      }
+    });
+  }
+
+  void _redirectToPending() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const PendingApprovalScreen()),
+        );
+      }
+    });
+  }
+
+  // Fetch Earnings from Firestore
   Future<double> _getEarnings() async {
     try {
       double total = 0.0;
       final uid = sharedPreferences!.getString("uid");
       if (uid == null) return 0.0;
 
-      // Fetch Parcel Requests
       final reqSnap = await _firestore
           .collection('requests')
           .where('driverId', isEqualTo: uid)
@@ -54,7 +131,6 @@ class _HomeScreenState extends State<HomeScreen> {
         total += (doc.data()['actualFare'] ?? doc.data()['estimatedFare'] ?? 0).toDouble();
       }
 
-      // Fetch Orders
       final ordSnap = await _firestore
           .collection('orders')
           .where('driverId', isEqualTo: uid)
@@ -92,11 +168,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final imageUrl = sharedPreferences!.getString("imageUrl");
     final String driverId = sharedPreferences!.getString("uid") ?? "";
 
-    return StreamBuilder<DocumentSnapshot>(
-      stream: _firestore.collection("riders").doc(driverId).snapshots(),
+    return FutureBuilder<DocumentSnapshot>(
+      future: _firestore.collection("wallets").doc(driverId).get(),
       builder: (context, snapshot) {
         double balance = 0;
-        if (snapshot.hasData && snapshot.data!.exists) {
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          balance = 0;
+        } else if (snapshot.hasData && snapshot.data!.exists) {
           final data = snapshot.data!.data() as Map<String, dynamic>;
           balance = (data["balance"] ?? 0).toDouble();
         }
@@ -139,7 +218,10 @@ class _HomeScreenState extends State<HomeScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(color: Colors.white.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-                child: Text("Balance: ZMW ${balance.toStringAsFixed(2)}", style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                child: Text(
+                    "Balance: ZMW ${balance.toStringAsFixed(2)}",
+                    style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)
+                ),
               ),
             ],
           ),
@@ -230,7 +312,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    _checkUserStatus();
     final userName = sharedPreferences!.getString("name") ?? "Rider";
 
     return Scaffold(

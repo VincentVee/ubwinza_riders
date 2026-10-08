@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../global/global_instances.dart';
 import '../widgets/custom_text_field.dart';
+import 'signup_screen.dart'; // Ensure correct path import
 
 class SignInScreen extends StatefulWidget {
   const SignInScreen({super.key});
@@ -10,46 +11,66 @@ class SignInScreen extends StatefulWidget {
 }
 
 class _SignInScreenState extends State<SignInScreen> {
-  TextEditingController emailTextEditngController = TextEditingController();
-  TextEditingController passwordTextEditngController = TextEditingController();
+  final TextEditingController emailTextEditingController = TextEditingController();
+  final TextEditingController passwordTextEditingController = TextEditingController();
 
   bool _isSigningIn = false;
-  bool _obscurePassword = true; // <-- toggle state
+  bool _obscurePassword = true;
+
+  @override
+  void dispose() {
+    emailTextEditingController.dispose();
+    passwordTextEditingController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 28.0, vertical: 32.0),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Image.asset(
-                "images/ubwinza-icon.jpeg",
-                height: 270,
-              ),
+          const Text(
+            "Welcome Back",
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF09113C),
             ),
           ),
+          const SizedBox(height: 4),
+          Text(
+            "Sign in to secure your route and start earning",
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey.shade600,
+            ),
+          ),
+          const SizedBox(height: 32),
+
           Column(
             children: [
               CustomeTextField(
-                textEditingController: emailTextEditngController,
-                iconData: Icons.email,
-                hintString: "Email",
+                textEditingController: emailTextEditingController,
+                iconData: Icons.email_outlined,
+                hintString: "Email Address",
                 isObsecure: false,
-                enable: true,
+                enable: !_isSigningIn,
               ),
+              const SizedBox(height: 16),
               CustomeTextField(
-                textEditingController: passwordTextEditngController,
-                iconData: Icons.lock,
+                textEditingController: passwordTextEditingController,
+                iconData: Icons.lock_outline_rounded,
                 hintString: "Password",
-                isObsecure: _obscurePassword, // <-- use toggle
-                enable: true,
+                isObsecure: _obscurePassword,
+                enable: !_isSigningIn,
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscurePassword ? Icons.visibility : Icons.visibility_off,
-                    color: Colors.grey,
+                    _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                    color: Colors.grey.shade500,
+                    size: 22,
                   ),
                   onPressed: () {
                     setState(() {
@@ -58,51 +79,90 @@ class _SignInScreenState extends State<SignInScreen> {
                   },
                 ),
               ),
-              const SizedBox(height: 10),
-              ElevatedButton(
-                onPressed: _isSigningIn
-                    ? null
-                    : () async {
-                  setState(() {
-                    _isSigningIn = true;
-                  });
+              const SizedBox(height: 32),
 
-                  await authViewModel.validateSignInForm(
-                    emailTextEditngController.text.trim(),
-                    passwordTextEditngController.text.trim(),
-                    context,
-                  );
-
-                  setState(() {
-                    _isSigningIn = false;
-                  });
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 50, vertical: 10),
-                ),
-                child: _isSigningIn
-                    ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
+              SizedBox(
+                width: double.infinity,
+                height: 54,
+                child: ElevatedButton(
+                  onPressed: _isSigningIn ? null : _handleSignIn,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1A2B7B),
+                    disabledBackgroundColor: const Color(0xFF1A2B7B).withOpacity(0.6),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                   ),
-                )
-                    : const Text(
-                  "Sign In",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
+                  child: _isSigningIn
+                      ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2.5,
+                    ),
+                  )
+                      : const Text(
+                    "Sign In",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
+              ),
+              const SizedBox(height: 24),
+
+              // LINK TO SIGN UP PAGE
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    "Don't have an account? ",
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (c) => const SignupScreen()),
+                      );
+                    },
+                    child: const Text(
+                      "Register Here",
+                      style: TextStyle(
+                        color: Color(0xFF1A2B7B),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _handleSignIn() async {
+    setState(() {
+      _isSigningIn = true;
+    });
+
+    await authViewModel.validateSignInForm(
+      emailTextEditingController.text.trim(),
+      passwordTextEditingController.text.trim(),
+      context,
+    );
+
+    if (mounted) {
+      setState(() {
+        _isSigningIn = false;
+      });
+    }
   }
 }

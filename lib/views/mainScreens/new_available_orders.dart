@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:uuid/uuid.dart';
 
 import '../../global/global_vars.dart';
 import 'order_in_progress.dart';
@@ -19,6 +22,213 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   String? amountError;
   static const double minimumWalletBalance = 50.0;
+
+  // Backend URL - Updated to your Render URL
+  final String backendUrl = 'https://ubwinza-server-1.onrender.com';
+
+  /// NETWORK PREFIXES FOR ZAMBIA (CORRECTED)
+  Map<String, List<String>> get networkPrefixes {
+    return {
+      "MTN": ["076", "096", "056"],           // MTN prefixes
+      "Airtel": ["077", "097", "057"],        // Airtel prefixes
+      "Zamtel": ["095", "055"],               // Zamtel prefixes
+    };
+  }
+
+  /// VALIDATE PHONE NUMBER MATCHES SELECTED NETWORK - FIXED
+  String? validatePhoneForNetwork(String phoneNumber, String network) {
+    // Remove any spaces, dashes, plus signs
+    String cleaned = phoneNumber.replaceAll(RegExp(r'[^\d]'), '');
+
+    print("🔍 Validating: Number='$phoneNumber', Network='$network'");
+    print("🔍 Cleaned: '$cleaned'");
+
+    // Store original for prefix detection
+    String originalForPrefix = cleaned;
+
+    // For prefix detection, we need to handle numbers with or without leading zero
+    // If number starts with 0, keep it for prefix detection (e.g., 096 -> prefix is 096)
+    // If number doesn't start with 0, add the country code or assume it's already formatted
+
+    String prefixForDetection;
+
+    if (cleaned.startsWith('0')) {
+      // Local format: 0960670057
+      // Take first 3 digits including the zero
+      if (cleaned.length >= 3) {
+        prefixForDetection = cleaned.substring(0, 3);
+      } else {
+        return "Phone number too short";
+      }
+      print("🔍 Local format detected, prefix (with zero): '$prefixForDetection'");
+    } else if (cleaned.startsWith('260')) {
+      // International format: 260960670057
+      // Remove country code, then take first 3 digits (which will include the zero if present)
+      String withoutCountry = cleaned.substring(3);
+      if (withoutCountry.length >= 3) {
+        prefixForDetection = withoutCountry.substring(0, 3);
+      } else {
+        return "Phone number too short";
+      }
+      print("🔍 International format detected, prefix: '$prefixForDetection'");
+    } else {
+      // Already cleaned without leading zero: 960670057
+      // But Zambia numbers should have leading zero, so this might be missing it
+      // Add the leading zero back for prefix detection
+      String withLeadingZero = '0' + cleaned;
+      if (withLeadingZero.length >= 3) {
+        prefixForDetection = withLeadingZero.substring(0, 3);
+      } else {
+        return "Phone number too short";
+      }
+      print("🔍 No leading zero, added it back. Prefix: '$prefixForDetection'");
+    }
+
+    print("🔍 Prefix for validation: '$prefixForDetection'");
+
+    // Check if this prefix belongs to ANY network
+    String? detectedNetwork;
+    for (var entry in networkPrefixes.entries) {
+      if (entry.value.contains(prefixForDetection)) {
+        detectedNetwork = entry.key;
+        break;
+      }
+    }
+
+    if (detectedNetwork == null) {
+      print("❌ Unknown prefix: '$prefixForDetection'");
+      return "⚠️ Invalid phone number prefix '$prefixForDetection'.\nValid prefixes: MTN(076,096,056), Airtel(077,097,057), Zamtel(095,055)";
+    }
+
+    print("🔍 Detected network: $detectedNetwork");
+    print("🔍 Selected network: $network");
+
+    // Check if detected network matches selected network
+    if (detectedNetwork != network) {
+      print("❌ Network mismatch! Selected $network but number belongs to $detectedNetwork");
+      return "⚠️ This number belongs to **$detectedNetwork**.\n\nPlease select **$detectedNetwork** to continue.";
+    }
+
+    print("✅ Validation passed! Number belongs to $network");
+    return null; // Validation passed
+  }
+
+  /// GET NETWORK FROM PHONE NUMBER (auto-detection)
+  String? detectNetworkFromPhone(String phoneNumber) {
+    String cleaned = phoneNumber.replaceAll(RegExp(r'[^\d]'), '');
+
+    String prefixForDetection;
+
+    if (cleaned.startsWith('0')) {
+      if (cleaned.length >= 3) {
+        prefixForDetection = cleaned.substring(0, 3);
+      } else {
+        return null;
+      }
+    } else if (cleaned.startsWith('260')) {
+      String withoutCountry = cleaned.substring(3);
+      if (withoutCountry.length >= 3) {
+        prefixForDetection = withoutCountry.substring(0, 3);
+      } else {
+        return null;
+      }
+    } else {
+      String withLeadingZero = '0' + cleaned;
+      if (withLeadingZero.length >= 3) {
+        prefixForDetection = withLeadingZero.substring(0, 3);
+      } else {
+        return null;
+      }
+    }
+
+    for (var entry in networkPrefixes.entries) {
+      if (entry.value.contains(prefixForDetection)) {
+        return entry.key;
+      }
+    }
+    return null;
+  }
+
+  /// GET PREFIX FOR DISPLAY (shows which network a number belongs to)
+  String getNetworkFromPrefix(String phoneNumber) {
+    String cleaned = phoneNumber.replaceAll(RegExp(r'[^\d]'), '');
+
+    String prefixForDetection;
+
+    if (cleaned.startsWith('0')) {
+      if (cleaned.length >= 3) {
+        prefixForDetection = cleaned.substring(0, 3);
+      } else {
+        return "Unknown";
+      }
+    } else if (cleaned.startsWith('260')) {
+      String withoutCountry = cleaned.substring(3);
+      if (withoutCountry.length >= 3) {
+        prefixForDetection = withoutCountry.substring(0, 3);
+      } else {
+        return "Unknown";
+      }
+    } else {
+      String withLeadingZero = '0' + cleaned;
+      if (withLeadingZero.length >= 3) {
+        prefixForDetection = withLeadingZero.substring(0, 3);
+      } else {
+        return "Unknown";
+      }
+    }
+
+    switch (prefixForDetection) {
+      case "076": case "096": case "056":
+      return "MTN";
+      case "077": case "097": case "057":
+      return "Airtel";
+      case "095": case "055":
+      return "Zamtel";
+      default:
+        return "Unknown";
+    }
+  }
+
+  /// FORMAT PHONE NUMBER FOR API - Fixed
+  String formatPhoneNumber(String rawNumber) {
+    // Remove any spaces, dashes, plus signs
+    String cleaned = rawNumber.replaceAll(RegExp(r'[^\d]'), '');
+
+    print("Raw phone: $rawNumber -> Cleaned: $cleaned");
+
+    // If it starts with 0, remove the zero and add country code
+    if (cleaned.startsWith('0')) {
+      cleaned = cleaned.substring(1);
+      String formatted = "260$cleaned";
+      print("Formatted phone (from local): $formatted");
+      return formatted;
+    }
+
+    // If it already has country code
+    if (cleaned.startsWith('260')) {
+      print("Formatted phone (already has country code): $cleaned");
+      return cleaned;
+    }
+
+    // If no leading zero and no country code, assume it's missing the zero
+    String formatted = "260$cleaned";
+    print("Formatted phone (added country code): $formatted");
+    return formatted;
+  }
+
+  /// MAP NETWORK TO PAWAPAY PROVIDER CODE - UPDATED for Airtel
+  String mapNetworkToProvider(String network) {
+    switch (network) {
+      case "MTN":
+        return "MTN_MOMO_ZMB";
+      case "Airtel":
+        return "AIRTEL_OAPI_ZMB";  // Updated to the correct provider code
+      case "Zamtel":
+        return "ZAMTEL_ZMB";
+      default:
+        return "MTN_MOMO_ZMB";
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,25 +258,22 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
       ),
 
       /// STREAM WALLET BALANCE LIVE
+      /// STREAM WALLET BALANCE LIVE - Read from wallets collection
       body: StreamBuilder<DocumentSnapshot>(
-        stream: _firestore.collection("riders").doc(driverId).snapshots(),
+        stream: _firestore.collection("wallets").doc(driverId).snapshots(),
         builder: (context, walletSnapshot) {
-
           if (walletSnapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
 
           if (!walletSnapshot.hasData || !walletSnapshot.data!.exists) {
             return const Center(
-              child: Text("Rider profile not found"),
+              child: Text("Wallet not found"),
             );
           }
 
-          final riderData =
-          walletSnapshot.data!.data() as Map<String, dynamic>;
-
-          final double walletBalance =
-          (riderData["balance"] ?? 0).toDouble();
+          final walletData = walletSnapshot.data!.data() as Map<String, dynamic>;
+          final double walletBalance = (walletData["balance"] ?? 0).toDouble();
 
           /// 🚫 BLOCK RIDER IF BALANCE LOW
           if (walletBalance < minimumWalletBalance) {
@@ -146,69 +353,59 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
     );
   }
 
-  /// 🚫 LOW BALANCE UI
+  /// 🚫 LOW BALANCE UI - FIXED OVERFLOW
   Widget _buildInsufficientBalance(double balance) {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(25),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-
             const Icon(
               Icons.account_balance_wallet,
-              size: 80,
+              size: 70,
               color: Colors.orange,
             ),
-
-            const SizedBox(height: 20),
-
+            const SizedBox(height: 15),
             const Text(
               "Insufficient Wallet Balance",
               style: TextStyle(
-                fontSize: 20,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
                 color: Colors.red,
               ),
+              textAlign: TextAlign.center,
             ),
-
-            const SizedBox(height: 10),
-
+            const SizedBox(height: 8),
             const Text(
               "You need to top up your wallet to accept new rides.",
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.black
-              ),
+              style: TextStyle(color: Colors.black, fontSize: 14),
             ),
-
-            const SizedBox(height: 10),
-
+            const SizedBox(height: 8),
             Text(
               "Current Balance: ZMW ${balance.toStringAsFixed(2)}",
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
-                color: Colors.black
+                color: Colors.black,
               ),
             ),
-
-            const SizedBox(height: 30),
-
-            ElevatedButton.icon(
-              icon: const Icon(Icons.add),
-              label: const Text("Add Amount"),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: primaryColor,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 30, vertical: 12),
-              ),
-              onPressed: () {
-
-                /// Navigate to wallet screen
-               // Navigator.pushNamed(context, "/walletTopup");
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text("Add Amount"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primaryColor,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                onPressed: () {
                   _showTopUpDialog(context);
-              },
+                },
+              ),
             ),
           ],
         ),
@@ -216,22 +413,619 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
     );
   }
 
-  /// ACCEPT ORDER
+  void _showTopUpDialog(BuildContext context) {
+    final amountController = TextEditingController();
+    final phoneController = TextEditingController();
+    String selectedNetwork = "MTN";
+    String? phoneError;
+    String? amountError;
+    String? networkMatchError;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            void setQuickAmount(int amount) {
+              amountController.text = amount.toString();
+            }
+
+            // Live phone validation as user types
+            void validatePhoneLive(String value) {
+              if (value.isNotEmpty) {
+                final validationError = validatePhoneForNetwork(value, selectedNetwork);
+                if (validationError != null) {
+                  setState(() {
+                    networkMatchError = validationError;
+                  });
+                } else {
+                  setState(() {
+                    networkMatchError = null;
+                  });
+                }
+              } else {
+                setState(() {
+                  networkMatchError = null;
+                });
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).viewInsets.bottom,
+                left: 20,
+                right: 20,
+                top: 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Center(
+                      child: Text(
+                        "Top Up Wallet",
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    /// NETWORK SELECT
+                    const Text(
+                      "Select Network",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _networkButton("MTN", selectedNetwork, (v) {
+                          setState(() {
+                            selectedNetwork = v;
+                            if (phoneController.text.isNotEmpty) {
+                              validatePhoneLive(phoneController.text);
+                            }
+                          });
+                        }),
+                        _networkButton("Airtel", selectedNetwork, (v) {
+                          setState(() {
+                            selectedNetwork = v;
+                            if (phoneController.text.isNotEmpty) {
+                              validatePhoneLive(phoneController.text);
+                            }
+                          });
+                        }),
+                        _networkButton("Zamtel", selectedNetwork, (v) {
+                          setState(() {
+                            selectedNetwork = v;
+                            if (phoneController.text.isNotEmpty) {
+                              validatePhoneLive(phoneController.text);
+                            }
+                          });
+                        }),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+
+                    /// NETWORK PREFIX INFO
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            "📱 Network Prefixes:",
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.black),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Container(width: 12, height: 12, color: const Color(0xFFFFCC00)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  "MTN: 076, 096, 056",
+                                  style: const TextStyle(fontSize: 12, color: Colors.black),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(width: 12, height: 12, color: const Color(0xFFE60000)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  "Airtel: 077, 097, 057",
+                                  style: const TextStyle(fontSize: 12, color: Colors.black),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Container(width: 12, height: 12, color: const Color(0xFF008000)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  "Zamtel: 095, 055",
+                                  style: const TextStyle(fontSize: 12, color: Colors.black),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    /// 📱 PHONE NUMBER FIELD
+                    const Text(
+                      "Mobile Money Phone Number",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: phoneController,
+                      keyboardType: TextInputType.phone,
+                      decoration: InputDecoration(
+                        hintText: "e.g., 0960670057",
+                        prefixText: "+260 ",
+                        border: const OutlineInputBorder(),
+                        errorText: networkMatchError ?? phoneError,
+                        helperText: "Enter the phone number registered with your mobile money",
+                        helperStyle: const TextStyle(fontSize: 11),
+                      ),
+                      style: const TextStyle(color: Colors.black),
+                      onChanged: (value) {
+                        if (phoneError != null) {
+                          setState(() => phoneError = null);
+                        }
+                        validatePhoneLive(value);
+                      },
+                    ),
+
+                    /// Show detected network
+                    if (phoneController.text.isNotEmpty && networkMatchError == null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            Icon(Icons.info, size: 14, color: Colors.blue.shade700),
+                            const SizedBox(width: 4),
+                            Text(
+                              "Detected network: ${getNetworkFromPrefix(phoneController.text)}",
+                              style: TextStyle(fontSize: 11, color: Colors.blue.shade700),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    /// SUGGEST CORRECT NETWORK BUTTON (if mismatch detected)
+                    if (networkMatchError != null && networkMatchError!.contains("belongs to"))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: TextButton(
+                          onPressed: () {
+                            final detectedNetwork = detectNetworkFromPhone(phoneController.text);
+                            if (detectedNetwork != null) {
+                              setState(() {
+                                selectedNetwork = detectedNetwork;
+                                networkMatchError = null;
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text("Network changed to $detectedNetwork"),
+                                  backgroundColor: Colors.green,
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          },
+                          child: const Text(
+                            "Auto-select correct network",
+                            style: TextStyle(color: Colors.blue),
+                          ),
+                        ),
+                      ),
+                    const SizedBox(height: 20),
+
+                    /// QUICK AMOUNTS
+                    const Text(
+                      "Quick Amount",
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _quickAmountButton(50, setQuickAmount),
+                        _quickAmountButton(100, setQuickAmount),
+                        _quickAmountButton(150, setQuickAmount),
+                        _quickAmountButton(200, setQuickAmount),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+
+                    /// MANUAL AMOUNT
+                    if (amountError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          amountError!,
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontWeight: FontWeight.w500,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    TextField(
+                      controller: amountController,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: "Enter Amount (ZMW)",
+                        border: const OutlineInputBorder(),
+                        errorText: amountError,
+                      ),
+                      style: const TextStyle(color: Colors.black),
+                      onChanged: (value) {
+                        if (amountError != null) {
+                          setState(() => amountError = null);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 20),
+
+                    /// PAY BUTTON
+                    SafeArea(
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryColor,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          child: const Text(
+                            "Proceed to Payment",
+                            style: TextStyle(fontSize: 16),
+                          ),
+                          onPressed: () {
+                            final amount = double.tryParse(amountController.text) ?? 0;
+                            final phoneNumber = phoneController.text.trim();
+
+                            // Validate phone number not empty
+                            if (phoneNumber.isEmpty) {
+                              setState(() {
+                                phoneError = "Please enter your phone number";
+                              });
+                              return;
+                            }
+
+                            // Validate network matches phone number
+                            final networkValidation = validatePhoneForNetwork(phoneNumber, selectedNetwork);
+                            if (networkValidation != null) {
+                              setState(() {
+                                networkMatchError = networkValidation;
+                              });
+                              return;
+                            }
+
+                            // Validate amount
+                            if (amount < 50) {
+                              setState(() {
+                                amountError = "Minimum top-up amount is ZMW 50";
+                              });
+                              return;
+                            }
+
+                            if (amount > 10000) {
+                              setState(() {
+                                amountError = "Maximum top-up amount is ZMW 10,000";
+                              });
+                              return;
+                            }
+
+                            setState(() {
+                              phoneError = null;
+                              amountError = null;
+                              networkMatchError = null;
+                            });
+
+                            Navigator.pop(context);
+                            _initiateTopUp(selectedNetwork, phoneNumber, amount);
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _networkButton(
+      String network,
+      String selected,
+      Function(String) onTap,
+      ) {
+    final bool active = network == selected;
+
+    Color networkColor;
+    String prefixes;
+    switch (network) {
+      case "MTN":
+        networkColor = const Color(0xFFFFCC00);
+        prefixes = "076, 096, 056";
+        break;
+      case "Airtel":
+        networkColor = const Color(0xFFE60000);
+        prefixes = "077, 097, 057";
+        break;
+      case "Zamtel":
+        networkColor = const Color(0xFF008000);
+        prefixes = "095, 055";
+        break;
+      default:
+        networkColor = Colors.grey;
+        prefixes = "";
+    }
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => onTap(network),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: networkColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: active ? Colors.black : Colors.transparent,
+              width: active ? 3 : 0,
+            ),
+            boxShadow: active
+                ? [
+              BoxShadow(
+                color: networkColor.withOpacity(0.6),
+                blurRadius: 10,
+                spreadRadius: 1,
+              )
+            ]
+                : [],
+          ),
+          child: Column(
+            children: [
+              Text(
+                network,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                  color: Colors.black,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                prefixes,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.black87,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _quickAmountButton(int amount, Function(int) onTap) {
+    return GestureDetector(
+      onTap: () => onTap(amount),
+      child: Container(
+        width: 70,
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: Colors.grey.shade200,
+        ),
+        child: Center(
+          child: Text(
+            "ZMW $amount",
+            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// INITIATE TOP-UP WITH NESTJS BACKEND
+  void _initiateTopUp(String network, String rawPhoneNumber, double amount) async {
+    // Show loading indicator
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+
+    try {
+      final String? riderId = _auth.currentUser?.uid;
+      if (riderId == null) {
+        throw Exception("User not logged in");
+      }
+
+      // Format phone number (remove leading zero, add country code)
+      final formattedPhone = formatPhoneNumber(rawPhoneNumber);
+      final provider = mapNetworkToProvider(network);
+
+      // Generate UUID for depositId
+      const uuid = Uuid();
+      final depositId = uuid.v4();
+
+      print("=========================================");
+      print("Initiating deposit:");
+      print("  DepositId: $depositId");
+      print("  RiderId: $riderId");
+      print("  Amount: $amount");
+      print("  Network: $network");
+      print("  Raw Phone: $rawPhoneNumber");
+      print("  Formatted Phone: $formattedPhone");
+      print("  Provider: $provider");
+      print("=========================================");
+
+      // Call your NestJS backend
+      final response = await http.post(
+        Uri.parse('$backendUrl/deposits/initiate'),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': riderId,
+          'Authorization': 'Bearer ${await _auth.currentUser?.getIdToken()}',
+        },
+        body: jsonEncode({
+          "depositId": depositId,
+          "amount": amount,
+          "currency": "ZMW",
+          "payer": {
+            "type": "MMO",
+            "accountDetails": {
+              "phoneNumber": formattedPhone,
+              "provider": provider,
+            }
+          }
+        }),
+      );
+
+      // Close loading dialog
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      print("Response status: ${response.statusCode}");
+      print("Response body: ${response.body}");
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Top-up initiated! Check your phone to complete payment."),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 5),
+          ),
+        );
+
+        // If requires redirect (for providers like Wave)
+        if (data['requiresRedirect'] == true && data['authorizationUrl'] != null) {
+          _launchURL(data['authorizationUrl']);
+        }
+
+        // Show instruction dialog
+        _showPaymentInstructionDialog(network, amount);
+
+      } else {
+        final error = jsonDecode(response.body);
+        throw Exception(error['message'] ?? 'Failed to initiate deposit');
+      }
+
+    } catch (e) {
+      // Close loading dialog if still open
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      // Show error
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error: ${e.toString()}"),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+
+      print("Top-up error: $e");
+    }
+  }
+
+  /// SHOW INSTRUCTION DIALOG BASED ON NETWORK
+  void _showPaymentInstructionDialog(String network, double amount) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Check Your Phone"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Follow these steps:"),
+            const SizedBox(height: 10),
+            Text("1. Check your phone for a USSD pop-up or SMS from $network"),
+            const SizedBox(height: 5),
+            Text("2. Enter your mobile money PIN to authorize ZMW ${amount.toStringAsFixed(2)}"),
+            const SizedBox(height: 5),
+            const Text("3. Wait for confirmation"),
+            const SizedBox(height: 10),
+            const Text(
+              "Your wallet will be updated automatically once payment is complete.",
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// LAUNCH URL FOR WEBVIEW (for providers that require redirect)
+  void _launchURL(String url) async {
+    // You'll need to add url_launcher package
+    // import 'package:url_launcher/url_launcher.dart';
+    // if (await canLaunch(url)) {
+    //   await launch(url);
+    // }
+    print("Would launch: $url");
+  }
+
   void _confirmAccept(BuildContext context, String requestId, String driverId,
       Map<String, dynamic> requestData) {
-
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text("Accept Pickup"),
         content: const Text("Confirm acceptance for pickup and delivery?"),
         actions: [
-
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Cancel"),
           ),
-
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
@@ -251,16 +1045,12 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
       String requestId,
       String driverId,
       Map<String, dynamic> requestData) async {
-
     try {
-
       final riderDoc =
       await _firestore.collection("riders").doc(driverId).get();
-
       final riderData = riderDoc.data();
 
       await _firestore.collection("orders").doc(requestId).update({
-
         "status": "accepted",
         "driverId": driverId,
         "driverName": riderData?["name"] ?? "Unknown Rider",
@@ -280,9 +1070,7 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
           ),
         );
       }
-
     } catch (e) {
-
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -294,27 +1082,20 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
     }
   }
 
-  /// REJECT ORDER
   void _confirmReject(BuildContext context, String requestId) {
-
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text("Reject Pickup"),
-        content: const Text(
-            "Are you sure you want to reject this pickup order?"),
+        content: const Text("Are you sure you want to reject this pickup order?"),
         actions: [
-
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Cancel"),
           ),
-
           TextButton(
             onPressed: () async {
-
               Navigator.pop(context);
-
               await _firestore
                   .collection("orders")
                   .doc(requestId)
@@ -322,7 +1103,6 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
                 "status": "prepared",
                 "driverId": FieldValue.delete(),
               });
-
             },
             child: const Text(
               "Reject",
@@ -333,297 +1113,6 @@ class _NewAvailableOrdersScreenState extends State<NewAvailableOrdersScreen> {
       ),
     );
   }
-
-  void _showTopUpDialog(BuildContext context) {
-
-    final amountController = TextEditingController();
-    String selectedNetwork = "MTN";
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
-
-      ),
-      builder: (context) {
-
-        return StatefulBuilder(
-          builder: (context, setState) {
-
-            void setQuickAmount(int amount) {
-              amountController.text = amount.toString();
-            }
-
-            return Padding(
-              padding: EdgeInsets.only(
-                bottom: MediaQuery.of(context).viewInsets.bottom,
-                left: 20,
-                right: 20,
-                top: 20,
-              ),
-
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-
-                children: [
-
-                  const Center(
-                    child: Text(
-                      "Top Up Wallet",
-                      style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  /// NETWORK SELECT
-                  const Text(
-                    "Select Network",
-                    style: TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-
-                      _networkButton("MTN", selectedNetwork, (v){
-                        setState(()=> selectedNetwork = v);
-                      }),
-
-                      _networkButton("Airtel", selectedNetwork, (v){
-                        setState(()=> selectedNetwork = v);
-                      }),
-
-                      _networkButton("Zamtel", selectedNetwork, (v){
-                        setState(()=> selectedNetwork = v);
-                      }),
-
-                    ],
-                  ),
-
-                  const SizedBox(height: 25),
-
-                  /// QUICK AMOUNTS
-                  const Text(
-                    "Quick Amount",
-                    style: TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
-                  ),
-
-                  const SizedBox(height: 10),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-
-                      _quickAmountButton(50, setQuickAmount),
-                      _quickAmountButton(100, setQuickAmount),
-                      _quickAmountButton(150, setQuickAmount),
-                      _quickAmountButton(200, setQuickAmount),
-
-                    ],
-                  ),
-
-                  const SizedBox(height: 25),
-
-                  /// MANUAL AMOUNT
-                  if (amountError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        amountError!,
-                        style: const TextStyle(
-                          color: Colors.red,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-
-                  TextField(
-                    controller: amountController,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: "Enter Amount (ZMW)",
-                      border: OutlineInputBorder(),
-                    ),
-                    style: TextStyle(color: Colors.black),
-                  ),
-                  const SizedBox(height: 20),
-
-                  /// PAY BUTTON
-                  SafeArea(
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: primaryColor,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                        ),
-
-                        child: const Text(
-                          "Proceed to Payment",
-                          style: TextStyle(fontSize: 16),
-                        ),
-
-                        onPressed: () {
-
-                          final amount = double.tryParse(amountController.text) ?? 0;
-
-                          if (amount < 50) {
-                            setState(() {
-                              amountError = "Please enter an amount of K50 and above.";
-                            });
-                            return;
-                          }
-
-                          setState(() {
-                            amountError = null;
-                          });
-
-                          Navigator.pop(context);
-
-                          _initiateTopUp(selectedNetwork, amount);
-                        },
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _networkButton(
-      String network,
-      String selected,
-      Function(String) onTap,
-      ) {
-    final bool active = network == selected;
-
-    Color networkColor;
-
-    switch (network) {
-      case "MTN":
-        networkColor = const Color(0xFFFFCC00); // MTN Yellow
-        break;
-
-      case "Airtel":
-        networkColor = const Color(0xFFE60000); // Airtel Red
-        break;
-
-      case "Zamtel":
-        networkColor = const Color(0xFF008000); // Zamtel Green
-        break;
-
-      default:
-        networkColor = Colors.grey;
-    }
-
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => onTap(network),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          margin: const EdgeInsets.symmetric(horizontal: 6),
-          padding: const EdgeInsets.symmetric(vertical: 14),
-
-          decoration: BoxDecoration(
-            color: networkColor,
-            borderRadius: BorderRadius.circular(12),
-
-            /// Highlight if selected
-            border: Border.all(
-              color: active ? Colors.black : Colors.transparent,
-              width: active ? 3 : 0,
-            ),
-
-            boxShadow: active
-                ? [
-              BoxShadow(
-                color: networkColor.withOpacity(0.6),
-                blurRadius: 10,
-                spreadRadius: 1,
-              )
-            ]
-                : [],
-          ),
-
-          child: Center(
-            child: Text(
-              network,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 15,
-
-                /// MTN text must be black
-                color: network == "MTN" ? Colors.black : Colors.white,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-  Widget _quickAmountButton(
-      int amount,
-      Function(int) onTap,
-      ) {
-    return GestureDetector(
-
-      onTap: ()=> onTap(amount),
-
-      child: Container(
-        width: 70,
-        padding: const EdgeInsets.symmetric(vertical: 10),
-
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
-          color: Colors.grey.shade200,
-        ),
-
-        child: Center(
-          child: Text(
-            "ZMW $amount",
-            style: const TextStyle(fontWeight: FontWeight.bold,color: Colors.black),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _initiateTopUp(String network, double amount) {
-
-    print("Network: $network");
-    print("Amount: $amount");
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          "Processing $network payment of ZMW ${amount.toStringAsFixed(2)}",
-        ),
-      ),
-    );
-
-    /// Here you call
-    /// MTN MoMo API
-    /// Airtel Money API
-    /// Zamtel API
-  }
-
-
 }
 
 
@@ -645,7 +1134,6 @@ class PickupRequestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-
     final deliveryFee = (data["deliveryFee"] ?? 0).toDouble();
     final rideType = data["rideType"] ?? "Delivery";
 
@@ -660,8 +1148,6 @@ class PickupRequestCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-
-            /// Ride Type
             Text(
               rideType.toUpperCase(),
               style: const TextStyle(
@@ -669,10 +1155,7 @@ class PickupRequestCard extends StatelessWidget {
                 fontSize: 16,
               ),
             ),
-
             const SizedBox(height: 10),
-
-            /// Delivery Fee
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -686,14 +1169,10 @@ class PickupRequestCard extends StatelessWidget {
                 ),
               ],
             ),
-
             const SizedBox(height: 15),
-
-            /// Buttons
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-
                 ElevatedButton.icon(
                   icon: const Icon(Icons.check),
                   label: const Text("Accept"),
@@ -703,15 +1182,13 @@ class PickupRequestCard extends StatelessWidget {
                   onPressed: () =>
                       onAccept(context, requestId, driverId, data),
                 ),
-
                 ElevatedButton.icon(
                   icon: const Icon(Icons.close),
                   label: const Text("Reject"),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.red,
                   ),
-                  onPressed: () =>
-                      onReject(context, requestId),
+                  onPressed: () => onReject(context, requestId),
                 ),
               ],
             )
